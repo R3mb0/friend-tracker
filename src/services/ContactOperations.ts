@@ -1,12 +1,19 @@
-import { TFile, stringifyYaml } from "obsidian";
+import { TFile, normalizePath, stringifyYaml } from "obsidian";
 import type FriendTracker from "@/main";
 import type {
 	Connection,
 	ContactData,
 	ContactWithCountdown,
 	Interaction,
+	Membership,
 } from "@/types";
 import { getContactFilePath, sanitizeFileName } from "@/utils/file";
+
+// Organization notes live in this subfolder of the contacts folder
+export const ORGANIZATIONS_FOLDER = "Organizations";
+
+// Code block that renders the member list inside an organization note
+export const MEMBERS_CODE_BLOCK = "friend-tracker-members";
 import { splitFrontmatter } from "@/utils/frontmatter";
 import {
 	daysBetween,
@@ -32,6 +39,23 @@ export function parseConnections(value: unknown): Connection[] {
 			contact: item.contact.trim(),
 			relation:
 				typeof item.relation === "string" ? item.relation.trim() : "",
+		}));
+}
+
+/** Organization memberships from the frontmatter, skipping malformed ones */
+export function parseMemberships(value: unknown): Membership[] {
+	if (!Array.isArray(value)) return [];
+	return value
+		.filter(
+			(item): item is Membership =>
+				!!item &&
+				typeof item === "object" &&
+				typeof item.organization === "string" &&
+				!!item.organization.trim()
+		)
+		.map((item) => ({
+			organization: item.organization.trim(),
+			role: typeof item.role === "string" ? item.role.trim() : "",
 		}));
 }
 
@@ -121,6 +145,11 @@ export class ContactOperations {
 							metadata.contact_interval
 						),
 						connections: parseConnections(metadata.connections),
+						organizations: parseMemberships(
+							metadata.organizations
+						).map((membership) =>
+							getLinkTarget(membership.organization)
+						),
 						file,
 					});
 				}
@@ -136,18 +165,24 @@ export class ContactOperations {
 	}
 
 	/**
-	 * "Keep in touch" goal in days: the contact's own value, otherwise the
-	 * default from the settings. null when there is no goal.
+	 * "Keep in touch" goal in days, set per contact. There is no default:
+	 * contacts without a value have no goal (null).
 	 */
 	public getContactInterval(value: unknown): number | null {
-		const own = Number(value);
-		if (value !== undefined && value !== null && value !== "") {
-			if (Number.isFinite(own) && own > 0) return Math.round(own);
-			// 0 or "none" switches the goal off for this contact
-			if (own === 0 || value === "none") return null;
-		}
-		const fallback = this.plugin.settings.defaultContactInterval;
-		return fallback > 0 ? fallback : null;
+		if (value === undefined || value === null || value === "") return null;
+		const days = Number(value);
+		return Number.isFinite(days) && days > 0 ? Math.round(days) : null;
+	}
+
+	/** Set or (with null) remove a contact's "keep in touch" goal */
+	public async setContactInterval(file: TFile, days: number | null) {
+		await this.plugin.app.fileManager.processFrontMatter(
+			file,
+			(frontmatter) => {
+				if (days && days > 0) frontmatter.contact_interval = days;
+				else delete frontmatter.contact_interval;
+			}
+		);
 	}
 
 	/** Age today, or at `until` (e.g. the date of death) */
@@ -282,6 +317,141 @@ export class ContactOperations {
 		const yaml = stringifyYaml(frontmatter);
 		await vault.create(filePath, `---\n${yaml.trimEnd()}\n---\n`);
 		return "created";
+	}
+
+	// ---------------------------------------------------------------------
+	// Organizations (companies, clubs, ...) as notes in a subfolder
+	// ---------------------------------------------------------------------
+
+	public getOrganizationsFolder(): string {
+		return normalizePath(
+			`${this.plugin.settings.contactsFolder}/${ORGANIZATIONS_FOLDER}`
+		);
+	}
+
+	public isOrganization(file: TFile): boolean {
+		return file.parent?.path === this.getOrganizationsFolder();
+	}
+
+	/** All organization notes, sorted by name */
+	public getOrganizations(): TFile[] {
+		const folder = this.plugin.app.vault.getFolderByPath(
+			this.getOrganizationsFolder()
+		);
+		if (!folder) return [];
+		return folder.children
+			.filter(
+				(file): file is TFile =>
+					file instanceof TFile && file.extension === "md"
+			)
+			.sort((a, b) => a.basename.localeCompare(b.basename));
+	}
+
+	/** The organization note with this name, created if it doesn't exist */
+	public async getOrCreateOrganization(name: string): Promise<TFile | null> {
+		const clean = sanitizeFileName(name);
+		if (!clean) return null;
+
+		const existing = this.getOrganizations().find(
+			(file) => file.basename.toLowerCase() === clean.toLowerCase()
+		);
+		if (existing) return existing;
+
+		const vault = this.plugin.app.vault;
+		const folder = this.getOrganizationsFolder();
+		if (!vault.getFolderByPath(folder)) await vault.createFolder(folder);
+
+		// The code block renders the member list (see main.ts)
+		const content = [
+			"---",
+			"type: organization",
+			"---",
+			"",
+			"## Members",
+			"",
+			"```" + MEMBERS_CODE_BLOCK,
+			"```",
+			"",
+		].join("\n");
+		return vault.create(normalizePath(`${folder}/${clean}.md`), content);
+	}
+
+	/** Contacts linked to an organization, with their role */
+	public async getMembers(
+		organization: TFile
+	): Promise<Array<{ file: TFile; name: string; role: string }>> {
+		const metadataCache = this.plugin.app.metadataCache;
+		const members: Array<{ file: TFile; name: string; role: string }> = [];
+		for (const { file, data } of await this.getContactData()) {
+			const membership = parseMemberships(data.organizations).find(
+				(entry) =>
+					metadataCache.getFirstLinkpathDest(
+						getLinkTarget(entry.organization),
+						file.path
+					) === organization
+			);
+			if (!membership) continue;
+			const name =
+				typeof data.name === "string" && data.name.trim()
+					? data.name.trim()
+					: file.basename;
+			members.push({ file, name, role: membership.role });
+		}
+		return members.sort((a, b) => a.name.localeCompare(b.name));
+	}
+
+	/** Add a contact to an organization, or update the role */
+	public async setMembership(
+		contact: TFile,
+		organization: TFile,
+		role: string
+	) {
+		const metadataCache = this.plugin.app.metadataCache;
+		await this.plugin.app.fileManager.processFrontMatter(
+			contact,
+			(frontmatter) => {
+				const memberships = parseMemberships(frontmatter.organizations);
+				const existing = memberships.find(
+					(entry) =>
+						metadataCache.getFirstLinkpathDest(
+							getLinkTarget(entry.organization),
+							contact.path
+						) === organization
+				);
+				if (existing) existing.role = role;
+				else {
+					memberships.push({
+						organization: `[[${organization.basename}]]`,
+						role,
+					});
+				}
+				frontmatter.organizations = memberships;
+			}
+		);
+	}
+
+	/** Remove a contact from an organization */
+	public async removeMembership(contact: TFile, organization: TFile) {
+		const metadataCache = this.plugin.app.metadataCache;
+		await this.plugin.app.fileManager.processFrontMatter(
+			contact,
+			(frontmatter) => {
+				const memberships = parseMemberships(
+					frontmatter.organizations
+				).filter(
+					(entry) =>
+						metadataCache.getFirstLinkpathDest(
+							getLinkTarget(entry.organization),
+							contact.path
+						) !== organization
+				);
+				if (memberships.length > 0) {
+					frontmatter.organizations = memberships;
+				} else {
+					delete frontmatter.organizations;
+				}
+			}
+		);
 	}
 
 	/** Full frontmatter of every contact file */

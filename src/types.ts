@@ -8,8 +8,6 @@ export interface FriendTrackerSettings {
 	defaultActiveTab: "notes" | "interactions" | "markdown";
 	/** Birthday notices on startup for birthdays within this many days */
 	birthdayReminderDays: number;
-	/** Default "keep in touch" goal in days; 0 = no goal */
-	defaultContactInterval: number;
 	showDeceased: boolean;
 	/** Template for new contacts */
 	newContactNoteSections: string[];
@@ -32,15 +30,22 @@ export interface ContactWithCountdown extends Contact {
 	deceased: boolean;
 	/** Date of death as "YYYY-MM-DD", "" if unknown or alive */
 	deathDate: string;
-	/** Effective "keep in touch" goal in days, null = none */
+	/** "Keep in touch" goal in days, null = none */
 	contactInterval: number | null;
 	connections: Connection[];
+	/** Names of the organizations the contact belongs to */
+	organizations: string[];
 }
 
 /** Columns the overview can be sorted by */
 export type SortColumn = Exclude<
 	keyof ContactWithCountdown,
-	"file" | "deceased" | "deathDate" | "contactInterval" | "connections"
+	"file"
+	| "deceased"
+	| "deathDate"
+	| "contactInterval"
+	| "connections"
+	| "organizations"
 >;
 
 export interface SortConfig {
@@ -54,6 +59,12 @@ export interface Interaction {
 	date: string;
 	text: string;
 	type?: InteractionType;
+}
+
+/** Membership in a company, club etc., e.g. { organization: "[[ACME]]", role: "Engineer" } */
+export interface Membership {
+	organization: string;
+	role: string;
 }
 
 /** Link to another contact, e.g. { contact: "[[Max]]", relation: "partner" } */
@@ -79,9 +90,10 @@ export interface ContactData {
 	interactions?: Interaction[];
 	/** Date of death ("YYYY-MM-DD"), or true if the date is unknown */
 	deceased?: string | boolean;
-	/** "Keep in touch" goal in days, overrides the default */
+	/** "Keep in touch" goal in days */
 	contact_interval?: number;
 	connections?: Connection[];
+	organizations?: Membership[];
 	[key: string]: unknown;
 }
 
@@ -92,7 +104,6 @@ export const DEFAULT_SETTINGS: FriendTrackerSettings = {
 	relationshipTypes: ["family", "friend", "colleague", "pet"],
 	defaultActiveTab: "notes",
 	birthdayReminderDays: 1,
-	defaultContactInterval: 30,
 	showDeceased: true,
 	newContactNoteSections: [],
 	newContactFields: [],

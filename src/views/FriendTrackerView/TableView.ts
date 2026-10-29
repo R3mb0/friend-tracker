@@ -21,6 +21,8 @@ interface ContactRow {
 	searchText: string;
 	relationship: string;
 	deceased: boolean;
+	/** Lowercase organization names */
+	organizations: string[];
 	contact: ContactWithCountdown;
 	checkbox: HTMLInputElement | null;
 }
@@ -123,6 +125,7 @@ export class TableView {
 		if (contacts.length > 0) {
 			this.renderSearch(toolbar);
 			this.renderRelationshipFilter(toolbar, contacts);
+			this.renderOrganizationFilter(toolbar, contacts);
 		}
 		if (contacts.some((contact) => contact.deceased)) {
 			this.renderDeceasedToggle(toolbar);
@@ -226,6 +229,45 @@ export class TableView {
 		dropdown.selectEl.setAttr("aria-label", "Filter by relationship");
 	}
 
+	/** Dropdown with the organizations contacts belong to */
+	private renderOrganizationFilter(
+		toolbar: HTMLElement,
+		contacts: ContactWithCountdown[]
+	) {
+		// Keep the original spelling for display, compare in lowercase
+		const names = new Map<string, string>();
+		for (const contact of contacts) {
+			for (const name of contact.organizations) {
+				const key = name.toLowerCase();
+				if (!names.has(key)) names.set(key, name);
+			}
+		}
+
+		if (
+			this.view.organizationFilter &&
+			!names.has(this.view.organizationFilter)
+		) {
+			this.view.organizationFilter = "";
+		}
+		if (names.size === 0) return;
+
+		const dropdown = new DropdownComponent(toolbar).addOption(
+			"",
+			"All organizations"
+		);
+		Array.from(names.entries())
+			.sort((a, b) => a[1].localeCompare(b[1]))
+			.forEach(([key, name]) => dropdown.addOption(key, name));
+		dropdown
+			.setValue(this.view.organizationFilter)
+			.onChange((value) => {
+				this.view.organizationFilter = value;
+				this.applyFilters();
+			});
+		dropdown.selectEl.addClass("friend-tracker-organization-filter");
+		dropdown.selectEl.setAttr("aria-label", "Filter by organization");
+	}
+
 	/** Toggle button to show or hide deceased contacts */
 	private renderDeceasedToggle(toolbar: HTMLElement) {
 		const button = toolbar.createEl("button", {
@@ -259,12 +301,14 @@ export class TableView {
 			.filter(Boolean);
 		const relationship = this.view.relationshipFilter;
 		const showDeceased = this.view.showDeceased;
+		const organization = this.view.organizationFilter;
 
 		let visibleCount = 0;
-		for (const { row, searchText, relationship: rowType, deceased } of this
-			.rows) {
+		for (const entry of this.rows) {
+			const { row, searchText, relationship: rowType, deceased } = entry;
 			const matches =
 				(showDeceased || !deceased) &&
+				(!organization || entry.organizations.includes(organization)) &&
 				(!relationship || rowType === relationship) &&
 				terms.every((term) => searchText.includes(term));
 			row.toggleClass("friend-tracker-row-hidden", !matches);
@@ -470,6 +514,9 @@ export class TableView {
 				),
 				relationship: contact.relationship.trim().toLowerCase(),
 				deceased: contact.deceased,
+				organizations: contact.organizations.map((name) =>
+					name.toLowerCase()
+				),
 				contact,
 				checkbox: null,
 			});
@@ -671,6 +718,9 @@ export class TableView {
 
 		addAction("tag", "Set type", (contacts) =>
 			this.view.bulkSetRelationship(contacts)
+		);
+		addAction("repeat", "Set rhythm", (contacts) =>
+			this.view.bulkSetRhythm(contacts)
 		);
 		addAction("calendar-plus", "Log interaction", (contacts) =>
 			this.view.bulkLogInteraction(contacts)

@@ -13,6 +13,11 @@ import {
 import type FriendTracker from "@/main";
 import { createRelationshipInput } from "@/components/ContactFields";
 import { createBirthdayInput } from "@/components/BirthdayInput";
+import {
+	createRhythmInput,
+	formatRhythm,
+	RhythmModal,
+} from "@/components/RhythmInput";
 import { InteractionView } from "@/components/InteractionView";
 import type {
 	ContactData,
@@ -25,10 +30,12 @@ import { InteractionModal } from "@/modals/InteractionModal";
 import { DeleteContactModal } from "@/modals/DeleteContactModal";
 import { DeceasedModal } from "@/modals/DeceasedModal";
 import { ConnectionModal } from "@/modals/ConnectionModal";
+import { OrganizationModal } from "@/modals/OrganizationModal";
 import {
 	getLinkTarget,
 	parseConnections,
 	parseDeceased,
+	parseMemberships,
 } from "@/services/ContactOperations";
 import {
 	INTERACTION_TYPES,
@@ -86,6 +93,7 @@ const NON_CUSTOM_FIELDS: string[] = [
 	STANDARD_FIELDS.DECEASED,
 	STANDARD_FIELDS.CONTACT_INTERVAL,
 	STANDARD_FIELDS.CONNECTIONS,
+	STANDARD_FIELDS.ORGANIZATIONS,
 	RELATIONSHIP_FIELD.key,
 	...DETAIL_FIELDS.map((field) => field.key),
 ];
@@ -286,6 +294,11 @@ export class ContactPageView extends ItemView {
 		});
 		this.renderConnections(connections);
 
+		const organizations = container.createEl("div", {
+			cls: "contact-connections contact-organizations",
+		});
+		this.renderOrganizations(organizations);
+
 		this.renderTabs(container);
 
 		// Content container for tab content
@@ -310,7 +323,7 @@ export class ContactPageView extends ItemView {
 	// Header: name, relationship, key facts, trivia
 	// ---------------------------------------------------------------------
 
-	/** Effective "keep in touch" goal in days (own value or default) */
+	/** "Keep in touch" goal in days, null if none is set */
 	private get contactInterval(): number | null {
 		return this.plugin.contactOperations.getContactInterval(
 			this.contactData.contact_interval
@@ -411,10 +424,16 @@ export class ContactPageView extends ItemView {
 			);
 		}
 
-		// The goal itself, so it's clear what the color refers to
-		const interval = this.contactInterval;
-		if (interval && !death.deceased) {
-			addFact("repeat", `Every ${pluralize(interval, "day")}`);
+		// The rhythm itself (click to change), so it's clear what the
+		// color refers to; without one, an invitation to set it
+		if (!death.deceased) {
+			const interval = this.contactInterval;
+			const rhythm = interval
+				? addFact("repeat", formatRhythm(interval))
+				: addFact("repeat", "Set contact rhythm", "is-muted");
+			rhythm.addClass("is-clickable");
+			rhythm.setAttr("aria-label", "Change how often to keep in touch");
+			rhythm.addEventListener("click", () => this.openRhythmModal());
 		}
 		// Jump to the interactions tab
 		lastContact.addClass("is-clickable");
@@ -991,44 +1010,40 @@ export class ContactPageView extends ItemView {
 		}
 	}
 
-	/** "Keep in touch every N days"; empty uses the default from settings */
+	/** "Keep in touch" rhythm: presets or a custom number of days */
 	private createContactIntervalField(container: HTMLElement) {
 		const key = STANDARD_FIELDS.CONTACT_INTERVAL;
 		const fieldContainer = container.createEl("div", {
 			cls: "contact-field",
 			attr: { "data-field": key },
 		});
-		fieldContainer.createEl("label", { text: "Contact every" });
+		fieldContainer.createEl("label", { text: "Keep in touch" });
 
-		const fallback = this.plugin.settings.defaultContactInterval;
-		const current = this.contactData[key];
-		const input = fieldContainer.createEl("input", {
-			cls: "contact-field-input",
-			attr: {
-				type: "number",
-				min: "0",
-				placeholder:
-					fallback > 0 ? `${fallback} (default)` : "No goal",
-				value: current == null ? "" : String(current),
-			},
-		});
-		fieldContainer.createSpan({
-			cls: "contact-field-suffix",
-			text: "days",
-		});
+		createRhythmInput(fieldContainer, this.contactInterval, (days) =>
+			this.setContactInterval(days, false)
+		);
+	}
 
-		input.addEventListener("change", async () => {
-			const value = input.value.trim();
-			if (!value) {
-				await this.removeField(key);
-				return;
-			}
-			const days = Number(value);
-			if (!Number.isFinite(days)) return;
-			// 0 switches the goal off for this contact
-			this.contactData[key] = Math.max(0, Math.round(days));
+	/** Set or (with null) remove the rhythm; optionally re-render the page */
+	private async setContactInterval(days: number | null, rerender = true) {
+		const key = STANDARD_FIELDS.CONTACT_INTERVAL;
+		if (days) {
+			this.contactData[key] = days;
 			await this.saveContactData();
-		});
+		} else {
+			delete this.contactData[key];
+			await this.saveContactData([key]);
+		}
+		if (rerender) this.render();
+	}
+
+	private openRhythmModal() {
+		new RhythmModal(
+			this.app,
+			`Keep in touch with ${this.displayName}`,
+			this.contactInterval,
+			(days) => this.setContactInterval(days)
+		).open();
 	}
 
 	private async removeField(field: string) {
@@ -1154,10 +1169,139 @@ export class ContactPageView extends ItemView {
 		);
 	}
 
+	// ---------------------------------------------------------------------
+	// Organizations (companies, clubs, ...)
+	// ---------------------------------------------------------------------
+
+	private renderOrganizations(section: HTMLElement) {
+		const header = section.createDiv({ cls: "contact-connections-header" });
+		header.createEl("h3", { text: "Organizations" });
+		const addButton = header.createEl("button", {
+			cls: "clickable-icon",
+			attr: { "aria-label": "Add organization" },
+		});
+		setIcon(addButton, "plus");
+		addButton.addEventListener("click", () => this.startAddOrganization());
+
+		const list = section.createDiv({ cls: "contact-connections-list" });
+		const memberships = parseMemberships(this.contactData.organizations);
+		memberships.forEach((membership, index) => {
+			const target = this.resolveContactLink(membership.organization);
+			const name =
+				target?.basename ?? getLinkTarget(membership.organization);
+			const item = list.createDiv({ cls: "contact-connection" });
+			setIcon(
+				item.createSpan({ cls: "contact-organization-icon" }),
+				"building-2"
+			);
+			const link = item.createEl("a", {
+				cls: "contact-connection-name",
+				text: name,
+				href: "#",
+			});
+			link.addEventListener("click", (e) => {
+				e.preventDefault();
+				this.openConnection(target, name);
+			});
+			if (membership.role) {
+				item.createSpan({
+					cls: "contact-organization-role",
+					text: membership.role,
+				});
+			}
+			const remove = item.createEl("button", {
+				cls: "clickable-icon contact-connection-remove",
+				attr: { "aria-label": `Remove from ${name}` },
+			});
+			setIcon(remove, "x");
+			remove.addEventListener("click", () =>
+				this.removeOrganization(index)
+			);
+		});
+
+		if (memberships.length === 0) {
+			list.createDiv({
+				cls: "contact-connections-empty",
+				text: "No organizations yet",
+			});
+		}
+	}
+
+	private startAddOrganization() {
+		const ops = this.plugin.contactOperations;
+		new OrganizationModal(
+			this.app,
+			this.displayName,
+			ops.getOrganizations().map((file) => file.basename),
+			(name, role) => this.addOrganization(name, role)
+		).open();
+	}
+
+	private async addOrganization(name: string, role: string) {
+		let organization: TFile | null;
+		try {
+			organization =
+				await this.plugin.contactOperations.getOrCreateOrganization(
+					name
+				);
+		} catch (error) {
+			console.error("Error creating organization:", error);
+			new Notice(`Could not create organization: ${error}`);
+			return;
+		}
+		if (!organization) {
+			new Notice("Please enter a name with valid characters");
+			return;
+		}
+
+		const memberships = parseMemberships(this.contactData.organizations);
+		const existing = memberships.find(
+			(entry) => this.resolveContactLink(entry.organization) === organization
+		);
+		if (existing) {
+			existing.role = role;
+		} else {
+			memberships.push({
+				organization: `[[${organization.basename}]]`,
+				role,
+			});
+		}
+		this.contactData.organizations = memberships;
+		await this.saveContactData();
+		this.render();
+	}
+
+	private async removeOrganization(index: number) {
+		const memberships = parseMemberships(this.contactData.organizations);
+		const [removed] = memberships.splice(index, 1);
+		if (!removed) return;
+		this.contactData.organizations = memberships;
+		if (memberships.length === 0) {
+			delete this.contactData.organizations;
+			await this.saveContactData([STANDARD_FIELDS.ORGANIZATIONS]);
+		} else {
+			await this.saveContactData();
+		}
+		this.render();
+
+		this.showUndoNotice("Removed from organization", () => {
+			const current = parseMemberships(this.contactData.organizations);
+			current.splice(Math.min(index, current.length), 0, removed);
+			this.contactData.organizations = current;
+		});
+	}
+
 	private openConnection(target: TFile | null, name: string) {
+		// Only files directly in the contacts folder are contacts
+		// (organizations live in a subfolder and open as notes)
 		const folder = this.plugin.settings.contactsFolder;
-		if (target && target.path.startsWith(folder + "/")) {
+		if (target && target.parent?.path === folder) {
 			this.plugin.openContact(target);
+		} else if (
+			target &&
+			this.plugin.contactOperations.isOrganization(target)
+		) {
+			this.plugin.openOrganization(target);
 		} else if (target) {
 			this.app.workspace.getLeaf("tab").openFile(target);
 		} else {

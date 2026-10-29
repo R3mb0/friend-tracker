@@ -8,7 +8,7 @@ The format follows [Keep a Changelog](https://keepachangelog.com/en/1.1.0/).
 ### Added
 
 **Keeping in touch**
-- "Keep in touch every N days" goal: a default in the settings (30 days) that each contact can override in its details (0 = no goal). "Last interaction" is colored relative to this goal: green while well within it, yellow when nearly due, red once overdue.
+- Contact rhythm per contact ("keep in touch every …"): every week, 2 weeks, month, 3 months, 6 months, year, or a custom number of days. There is no default; contacts without a rhythm get no color and no reminders. Set it from the profile header, in the contact details, or for several contacts at once in selection mode. "Last interaction" is colored relative to the rhythm: green while well within it, yellow when nearly due, red once overdue.
 - The overview header shows how many contacts are overdue, plus a "Reach out today" list with the three most overdue contacts, one click away.
 - Interaction types: meeting, call, video call, message and other, shown as icons. They can be chosen in the dialog and in the quick add.
 
@@ -20,6 +20,13 @@ The format follows [Keep a Changelog](https://keepachangelog.com/en/1.1.0/).
 
 **Connections between contacts**
 - Link contacts with a relation (e.g. "Max is Anna's brother"), optionally with the reverse direction stored in the other contact. Contacts that link to someone without a link back are shown too.
+
+**Organizations**
+- Companies, clubs, schools etc. as their own notes in `FriendTracker/Organizations`. Add a contact to an organization with an optional role from the contact's page; new names create the note automatically.
+- Organization notes list their members (with role) via a `friend-tracker-members` code block.
+- Filter the overview by organization.
+- Profile page for organizations: kind (company, club, school, …), website, phone, email, address, notes, and the member list. Members can be added, their role edited and removed right there. Rename or delete the organization from the page.
+- Opens from links on a contact's page, from "Open profile" in the organization note, or with the command "Open organization…".
 
 **Daily notes and mentions**
 - Interaction dates link to the daily note of that day, if it exists (core "Daily notes" plugin).
@@ -113,5 +120,5 @@ The format follows [Keep a Changelog](https://keepachangelog.com/en/1.1.0/).
 - Pinned the `obsidian` API to 1.7.2, updated TypeScript to 5.4, and added ESLint with `npm run lint`.
 - Release workflow uses `actions/*@v4`, Node 20 and `npm ci`.
 - Shared helpers for dates (`src/utils/date.ts`), frontmatter (`src/utils/frontmatter.ts`), file names (`src/utils/file.ts`) and display (`src/utils/display.ts`).
-- New frontmatter fields: `contact_interval`, `connections`, and `type` on interactions.
+- New frontmatter fields: `contact_interval`, `connections`, `organizations`, and `type` on interactions.
 - Contact creation lives in `ContactOperations.createContact` (used by the dialog and the vCard import). vCard handling is in `src/services/vcard.ts`, free of Obsidian APIs.

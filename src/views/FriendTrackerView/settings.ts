@@ -257,25 +257,6 @@ export class FriendTrackerSettingTab extends PluginSettingTab {
 				});
 			});
 
-		new Setting(containerEl)
-			.setName("Keep in touch every")
-			.setDesc(
-				"Default goal in days for contacting someone. Contacts can override it in their details (0 = no goal)"
-			)
-			.addText((text) => {
-				text.inputEl.type = "number";
-				text.inputEl.min = "0";
-				text.setValue(
-					String(this.plugin.settings.defaultContactInterval)
-				).onChange(async (value) => {
-					const days = Number(value);
-					if (!Number.isFinite(days) || days < 0) return;
-					this.plugin.settings.defaultContactInterval =
-						Math.round(days);
-					await this.plugin.saveSettings();
-				});
-			});
-
 		new Setting(containerEl).setName("New contacts").setHeading();
 
 		new Setting(containerEl)

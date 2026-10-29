@@ -18,6 +18,7 @@ import { AddContactModal } from "@/modals/AddContactModal";
 import { DeleteContactModal } from "@/modals/DeleteContactModal";
 import { InteractionModal } from "@/modals/InteractionModal";
 import { ConfirmModal, SetRelationshipModal } from "@/modals/BulkModals";
+import { RhythmModal } from "@/components/RhythmInput";
 import { pluralize } from "@/utils/date";
 
 export const VIEW_TYPE_FRIEND_TRACKER = "friend-tracker-view";
@@ -28,6 +29,8 @@ export class FriendTrackerView extends ItemView {
 	searchQuery = "";
 	/** Lowercase relationship type to show, "" for all */
 	relationshipFilter = "";
+	/** Lowercase organization name to show, "" for all */
+	organizationFilter = "";
 	private tableView: TableView;
 	private isRefreshing = false;
 	private refreshPending = false;
@@ -83,6 +86,30 @@ export class FriendTrackerView extends ItemView {
 					await this.plugin.saveSettings();
 				}
 				new Notice(`Updated ${contacts.length} contacts`);
+				this.finishBulkAction();
+			}
+		).open();
+	}
+
+	bulkSetRhythm(contacts: ContactWithCountdown[]) {
+		if (contacts.length === 0) return;
+		// Preselect the rhythm if all selected contacts share it
+		const first = contacts[0].contactInterval;
+		const shared = contacts.every(
+			(contact) => contact.contactInterval === first
+		);
+		new RhythmModal(
+			this.app,
+			`Keep in touch with ${pluralize(contacts.length, "contact")}`,
+			shared ? first : null,
+			async (days) => {
+				for (const contact of contacts) {
+					await this.plugin.contactOperations.setContactInterval(
+						contact.file,
+						days
+					);
+				}
+				new Notice(`Updated ${pluralize(contacts.length, "contact")}`);
 				this.finishBulkAction();
 			}
 		).open();

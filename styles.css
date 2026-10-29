@@ -2079,3 +2079,118 @@ If your plugin does not need CSS, delete this file.
 	color: var(--text-muted);
 	margin-left: var(--size-4-2);
 }
+
+/* ------------------------------------------------------------------ */
+/* Organizations                                                       */
+/* ------------------------------------------------------------------ */
+
+.contact-organization-icon {
+	display: inline-flex;
+	color: var(--text-faint);
+}
+
+.contact-organization-icon svg {
+	width: var(--icon-s);
+	height: var(--icon-s);
+}
+
+.contact-organization-role {
+	color: var(--text-muted);
+	font-size: var(--font-ui-small);
+}
+
+.friend-tracker-organization-filter {
+	flex: 0 0 auto;
+}
+
+/* Member list rendered inside organization notes */
+.friend-tracker-members ul {
+	margin: 0;
+}
+
+.friend-tracker-members-role {
+	color: var(--text-muted);
+}
+
+.friend-tracker-members-empty {
+	color: var(--text-faint);
+	font-style: italic;
+}
+
+/* ------------------------------------------------------------------ */
+/* Organization profile page                                           */
+/* ------------------------------------------------------------------ */
+
+.organization-header-icon {
+	display: inline-flex;
+	flex-shrink: 0;
+	color: var(--text-muted);
+}
+
+.organization-header-icon svg {
+	width: var(--icon-l);
+	height: var(--icon-l);
+}
+
+.organization-page .contact-fact a {
+	color: inherit;
+}
+
+/* Role shown as text, editable on click */
+.organization-member-role {
+	all: unset;
+	cursor: pointer;
+	color: var(--text-muted);
+	font-size: var(--font-ui-small);
+}
+
+.organization-member-role.is-empty {
+	color: var(--text-faint);
+	font-style: italic;
+	opacity: 0;
+}
+
+.contact-connection:hover .organization-member-role.is-empty,
+.organization-member-role:focus-visible {
+	opacity: 1;
+}
+
+.organization-member-role:hover {
+	color: var(--text-accent);
+	text-decoration: underline;
+}
+
+.organization-page .contact-notes-section {
+	border-top: 1px solid var(--background-modifier-border);
+}
+
+.friend-tracker-members-profile {
+	display: inline-block;
+	margin-bottom: var(--size-4-2);
+	font-size: var(--font-ui-small);
+}
+
+/* Contact rhythm: presets dropdown plus custom number of days */
+.friend-tracker-rhythm-input {
+	flex: 1;
+	display: flex;
+	flex-wrap: wrap;
+	align-items: center;
+	gap: var(--size-4-2);
+	min-width: 0;
+}
+
+.friend-tracker-rhythm-custom {
+	display: inline-flex;
+	align-items: center;
+	gap: var(--size-4-1);
+	color: var(--text-muted);
+}
+
+.friend-tracker-rhythm-custom input {
+	width: 5em;
+}
+
+.modal .friend-tracker-rhythm-input {
+	margin-bottom: var(--size-4-4);
+}

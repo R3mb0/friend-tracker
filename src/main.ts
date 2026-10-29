@@ -13,10 +13,20 @@ import {
 	VIEW_TYPE_CONTACT_PAGE,
 } from "@/views/ContactPageView";
 import { FriendTrackerSettingTab } from "./views/FriendTrackerView/settings";
-import { ContactOperations } from "@/services/ContactOperations";
+import {
+	ContactOperations,
+	MEMBERS_CODE_BLOCK,
+} from "@/services/ContactOperations";
 import { formatCountdown } from "@/utils/display";
 import { AddContactModal } from "@/modals/AddContactModal";
-import { ContactSuggestModal } from "@/modals/ContactSuggestModal";
+import {
+	ContactSuggestModal,
+	FileSuggestModal,
+} from "@/modals/ContactSuggestModal";
+import {
+	OrganizationPageView,
+	VIEW_TYPE_ORGANIZATION_PAGE,
+} from "@/views/OrganizationPageView";
 import { InteractionModal } from "@/modals/InteractionModal";
 import { buildVCards, parseVCards, VCardContact } from "@/services/vcard";
 
@@ -50,12 +60,18 @@ export default class FriendTracker extends Plugin {
 				(leaf) => new ContactPageView(leaf, this)
 			);
 
+			this.registerView(
+				VIEW_TYPE_ORGANIZATION_PAGE,
+				(leaf) => new OrganizationPageView(leaf, this)
+			);
+
 			// Add ribbon icon
 			this.addRibbonIcon("user", "Open friend tracker", () =>
 				this.activateView()
 			);
 
 			this.registerCommands();
+			this.registerMembersBlock();
 
 			// Add settings tab
 			this.addSettingTab(new FriendTrackerSettingTab(this.app, this));
@@ -66,6 +82,65 @@ export default class FriendTracker extends Plugin {
 			console.error("Friend Tracker failed to load:", error);
 			new Notice("Friend Tracker failed to load: " + error.message);
 		}
+	}
+
+	/**
+	 * Code block that lists the contacts belonging to an organization.
+	 * New organization notes contain it automatically.
+	 */
+	private registerMembersBlock() {
+		this.registerMarkdownCodeBlockProcessor(
+			MEMBERS_CODE_BLOCK,
+			async (_source, el, ctx) => {
+				const organization = this.app.vault.getFileByPath(
+					ctx.sourcePath
+				);
+				if (!organization) return;
+
+				const members = await this.contactOperations.getMembers(
+					organization
+				);
+				const container = el.createDiv({
+					cls: "friend-tracker-members",
+				});
+				const profileLink = container.createEl("a", {
+					cls: "friend-tracker-members-profile",
+					text: "Open profile",
+					href: "#",
+				});
+				profileLink.addEventListener("click", (e) => {
+					e.preventDefault();
+					this.openOrganization(organization);
+				});
+				if (members.length === 0) {
+					container.createDiv({
+						cls: "friend-tracker-members-empty",
+						text: "No members yet. Add this organization on a contact's page.",
+					});
+					return;
+				}
+
+				const list = container.createEl("ul");
+				for (const member of members) {
+					const item = list.createEl("li");
+					const link = item.createEl("a", {
+						cls: "internal-link",
+						text: member.name,
+						href: "#",
+					});
+					link.addEventListener("click", (e) => {
+						e.preventDefault();
+						this.openContact(member.file);
+					});
+					if (member.role) {
+						item.createSpan({
+							cls: "friend-tracker-members-role",
+							text: ` – ${member.role}`,
+						});
+					}
+				}
+			}
+		);
 	}
 
 	/** Commands for the command palette (and custom hotkeys) */
@@ -89,6 +164,24 @@ export default class FriendTracker extends Plugin {
 				this.chooseContact("Open contact", (contact) =>
 					this.openContact(contact.file)
 				),
+		});
+
+		this.addCommand({
+			id: "open-organization",
+			name: "Open organization…",
+			callback: () => {
+				const organizations = this.contactOperations.getOrganizations();
+				if (organizations.length === 0) {
+					new Notice("No organizations yet");
+					return;
+				}
+				new FileSuggestModal(
+					this.app,
+					organizations,
+					(file) => this.openOrganization(file),
+					"Open organization"
+				).open();
+			},
 		});
 
 		this.addCommand({
@@ -220,6 +313,21 @@ export default class FriendTracker extends Plugin {
 	}
 
 	/** Open a contact page, reusing an open one */
+	/** Open an organization's profile page, reusing an open one */
+	async openOrganization(file: TFile) {
+		const leaves = this.app.workspace.getLeavesOfType(
+			VIEW_TYPE_ORGANIZATION_PAGE
+		);
+		const leaf =
+			leaves.length > 0 ? leaves[0] : this.app.workspace.getLeaf("tab");
+		await leaf.setViewState({
+			type: VIEW_TYPE_ORGANIZATION_PAGE,
+			state: { filePath: file.path },
+		});
+		this.app.workspace.setActiveLeaf(leaf, { focus: true });
+		this.app.workspace.revealLeaf(leaf);
+	}
+
 	async openContact(file: TFile) {
 		const leaves = this.app.workspace.getLeavesOfType(
 			VIEW_TYPE_CONTACT_PAGE
