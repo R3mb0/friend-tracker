@@ -114,6 +114,8 @@ The format follows [Keep a Changelog](https://keepachangelog.com/en/1.1.0/).
 - The Chinese zodiac ignored the lunar new year, so January and early February birthdays could get the wrong animal.
 - The ribbon icon could open a second overview if the first one had not loaded yet.
 - The plugin overrode Obsidian's green theme color (`--color-green`) globally, affecting themes and other plugins.
+- Missing spacing in several places: dialog buttons, fields in edit mode, section headings and their lists, hints below inputs, interaction text running under its buttons, and more.
+- The "Year unknown" checkbox label was squeezed to a fixed width in edit mode and broke onto its own line in the "Add contact" dialog.
 
 ### Developer
 

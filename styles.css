@@ -286,6 +286,8 @@ If your plugin does not need CSS, delete this file.
 	margin-bottom: 0;
 	display: flex;
 	align-items: center;
+	/* Label, input, unit and remove button need room between them */
+	gap: var(--size-4-2);
 }
 
 .contact-field-label,
@@ -352,7 +354,8 @@ If your plugin does not need CSS, delete this file.
 .contact-interaction-item {
 	display: flex;
 	flex-direction: column;
-	padding: 8px 0;
+	/* Right padding keeps text clear of the edit/delete buttons */
+	padding: 8px 72px 8px 0;
 	margin: 0;
 	border-bottom: 1px solid var(--background-modifier-border);
 	position: relative;
@@ -725,6 +728,7 @@ If your plugin does not need CSS, delete this file.
 	margin-top: 24px;
 	display: flex;
 	justify-content: flex-end;
+	gap: var(--size-4-2);
 }
 
 /* Update modal button styles */
@@ -2193,4 +2197,76 @@ If your plugin does not need CSS, delete this file.
 
 .modal .friend-tracker-rhythm-input {
 	margin-bottom: var(--size-4-4);
+}
+
+/* ------------------------------------------------------------------ */
+/* Spacing fixes                                                       */
+/* ------------------------------------------------------------------ */
+
+/* Section headings (Connections, Organizations, Members) and their list */
+.contact-connections-header {
+	margin-bottom: var(--size-4-2);
+}
+
+/* Hints below inputs in dialogs */
+.friend-tracker-modal-field .setting-item-description,
+.modal form > .setting-item-description {
+	margin-top: var(--size-4-1);
+}
+
+/* The generic ".contact-field label" / modal label styles must not apply
+   to the "Year unknown" checkbox label */
+.contact-field .friend-tracker-birthday-toggle,
+.friend-tracker-modal-field .friend-tracker-birthday-toggle {
+	display: inline-flex;
+	width: auto;
+	margin: 0;
+}
+
+/* Edit-mode fields stacked with some air */
+.contact-fields-container.editing {
+	gap: var(--size-4-3);
+}
+
+/* Buttons below the details shouldn't touch the last field */
+.contact-info-section > .friend-tracker-button,
+.contact-edit-buttons {
+	margin-top: var(--size-4-3);
+}
+
+.contact-edit-buttons .friend-tracker-button {
+	margin-top: 0;
+}
+
+/* Interaction dialog: date/type row and text area */
+.contact-interaction-meta select {
+	flex-shrink: 0;
+}
+
+/* Organization page: space between header icon, title and buttons */
+.organization-page .contact-name-row {
+	gap: var(--size-4-2);
+}
+
+/* Members code block in organization notes */
+.friend-tracker-members li + li {
+	margin-top: var(--size-4-1);
+}
+
+/* Reach out list and stats in the overview header */
+.friend-tracker-stats + .friend-tracker-reach-out {
+	margin-top: var(--size-4-1);
+}
+
+/* Mentions list entries */
+.contact-mentions-list {
+	display: flex;
+	flex-direction: column;
+	gap: var(--size-4-1);
+}
+
+/* Interactions: the list should not stick to the quick add */
+.contact-quick-add + .contact-interactions-list,
+.contact-quick-add + .section-helper-text {
+	margin-top: var(--size-4-2);
 }
