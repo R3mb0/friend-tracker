@@ -1,4 +1,4 @@
-import { setIcon } from "obsidian";
+import { DropdownComponent, SearchComponent, setIcon } from "obsidian";
 import type { FriendTrackerView } from "./index";
 import type { ContactWithCountdown, SortConfig } from "@/types";
 import type { ContactOperations } from "@/services/ContactOperations";
@@ -6,34 +6,41 @@ import { parseLocalDate, pluralize } from "@/utils/date";
 
 type SortColumn = SortConfig["column"];
 
+interface ContactRow {
+	row: HTMLTableRowElement;
+	searchText: string;
+	relationship: string;
+}
+
 export class TableView {
+	private rows: ContactRow[] = [];
+	private noResultsEl: HTMLElement | null = null;
+	private searchInputEl: HTMLInputElement | null = null;
+	private resizeObserver: ResizeObserver | null = null;
+
 	constructor(
 		private view: FriendTrackerView,
 		private contactOps: ContactOperations
-	) {}
+	) {
+		this.view.register(() => this.resizeObserver?.disconnect());
+	}
 
 	render(
 		container: HTMLElement,
 		contacts: ContactWithCountdown[],
 		sort: SortConfig
 	) {
-		// Create header and add contact button container
-		const headerContainer = container.createEl("div", {
-			cls: "friend-tracker-header",
-		});
-		headerContainer.createEl("h2", { text: "Friend tracker" });
+		this.rows = [];
+		this.noResultsEl = null;
+		this.searchInputEl = null;
 
-		const addButton = headerContainer.createEl("button", {
-			text: "Add contact",
-			cls: "friend-tracker-button button-outlined",
-		});
-		addButton.addEventListener("click", () =>
-			this.view.openAddContactModal()
-		);
+		this.renderHeader(container, contacts);
+		const toolbar = this.renderToolbar(container, contacts);
 
 		const content = container.createEl("div", {
 			cls: "friend-tracker-content",
 		});
+		this.syncScrollbarWidth(toolbar, content);
 
 		if (contacts.length === 0) {
 			const emptyState = content.createEl("div", {
@@ -57,6 +64,218 @@ export class TableView {
 
 		this.renderTableHeader(table, sort);
 		this.renderTableRows(table, this.sortContacts(contacts, sort));
+
+		this.noResultsEl = content.createDiv({
+			cls: "friend-tracker-empty-state friend-tracker-no-results",
+			text: "No contacts match your search or filter.",
+		});
+		this.applyFilters();
+	}
+
+	/** The search input, if rendered (used to restore focus after a refresh) */
+	get searchInput(): HTMLInputElement | null {
+		return this.searchInputEl;
+	}
+
+	/**
+	 * Keep the toolbar aligned with the table: when the table area shows a
+	 * vertical scrollbar, the table gets narrower by its width.
+	 */
+	private syncScrollbarWidth(toolbar: HTMLElement, scroller: HTMLElement) {
+		this.resizeObserver?.disconnect();
+		const update = () => {
+			const width = scroller.offsetWidth - scroller.clientWidth;
+			toolbar.style.setProperty(
+				"--friend-tracker-scrollbar",
+				`${width}px`
+			);
+		};
+		// Fires on layout changes, including the scrollbar (dis)appearing
+		this.resizeObserver = new ResizeObserver(update);
+		this.resizeObserver.observe(scroller);
+	}
+
+	/** Search, relationship filter and add button between header and table */
+	private renderToolbar(
+		container: HTMLElement,
+		contacts: ContactWithCountdown[]
+	): HTMLElement {
+		const toolbar = container.createDiv({
+			cls: "friend-tracker-toolbar",
+		});
+
+		if (contacts.length > 0) {
+			this.renderSearch(toolbar);
+			this.renderRelationshipFilter(toolbar, contacts);
+		}
+
+		const addButton = toolbar.createEl("button", {
+			cls: "friend-tracker-add-button mod-cta",
+			attr: { "aria-label": "Add contact" },
+		});
+		setIcon(addButton, "user-plus");
+		addButton.addEventListener("click", () =>
+			this.view.openAddContactModal()
+		);
+
+		return toolbar;
+	}
+
+	private renderSearch(toolbar: HTMLElement) {
+		const searchContainer = toolbar.createDiv({
+			cls: "friend-tracker-search",
+		});
+		const search = new SearchComponent(searchContainer)
+			.setPlaceholder("Search contacts")
+			.setValue(this.view.searchQuery)
+			.onChange((value) => {
+				this.view.searchQuery = value;
+				this.applyFilters();
+			});
+		this.searchInputEl = search.inputEl;
+
+		search.inputEl.addEventListener("keydown", (e) => {
+			if (e.key === "Escape" && search.getValue()) {
+				e.preventDefault();
+				search.setValue("");
+				this.view.searchQuery = "";
+				this.applyFilters();
+			}
+		});
+	}
+
+	private renderRelationshipFilter(
+		toolbar: HTMLElement,
+		contacts: ContactWithCountdown[]
+	) {
+		// Only offer relationship types that are actually in use
+		const types = Array.from(
+			new Set(
+				contacts
+					.map((contact) => contact.relationship.trim().toLowerCase())
+					.filter(Boolean)
+			)
+		).sort((a, b) => a.localeCompare(b));
+
+		// Reset a filter whose type no longer exists
+		if (
+			this.view.relationshipFilter &&
+			!types.includes(this.view.relationshipFilter)
+		) {
+			this.view.relationshipFilter = "";
+		}
+
+		if (types.length === 0) return;
+
+		const dropdown = new DropdownComponent(toolbar).addOption(
+			"",
+			"All relationships"
+		);
+		for (const type of types) {
+			dropdown.addOption(
+				type,
+				type.charAt(0).toUpperCase() + type.slice(1)
+			);
+		}
+		dropdown
+			.setValue(this.view.relationshipFilter)
+			.onChange((value) => {
+				this.view.relationshipFilter = value;
+				this.applyFilters();
+			});
+		dropdown.selectEl.addClass("friend-tracker-relationship-filter");
+		dropdown.selectEl.setAttr("aria-label", "Filter by relationship");
+	}
+
+	/** Show only rows matching every search word and the relationship filter */
+	private applyFilters() {
+		const terms = normalizeForSearch(this.view.searchQuery)
+			.split(/\s+/)
+			.filter(Boolean);
+		const relationship = this.view.relationshipFilter;
+
+		let visibleCount = 0;
+		for (const { row, searchText, relationship: rowType } of this.rows) {
+			const matches =
+				(!relationship || rowType === relationship) &&
+				terms.every((term) => searchText.includes(term));
+			row.toggleClass("friend-tracker-row-hidden", !matches);
+			if (matches) visibleCount++;
+		}
+
+		this.noResultsEl?.toggleClass(
+			"friend-tracker-row-hidden",
+			visibleCount > 0 || this.rows.length === 0
+		);
+	}
+
+	private renderHeader(
+		container: HTMLElement,
+		contacts: ContactWithCountdown[]
+	): HTMLElement {
+		const header = container.createEl("div", {
+			cls: "friend-tracker-header",
+		});
+
+		header.createEl("h2", { text: "Friend tracker" });
+
+		if (contacts.length === 0) return header;
+
+		// At-a-glance summary below the title
+		const stats = header.createDiv({ cls: "friend-tracker-stats" });
+		const addStat = (icon: string, text: string, highlight = false) => {
+			const stat = stats.createDiv({
+				cls: `friend-tracker-stat${highlight ? " is-highlighted" : ""}`,
+			});
+			setIcon(stat.createSpan({ cls: "friend-tracker-stat-icon" }), icon);
+			stat.createSpan({ text });
+		};
+
+		addStat("users", pluralize(contacts.length, "contact"));
+
+		const nextBirthday = this.findMin(contacts, (c) => c.daysUntilBirthday);
+		if (nextBirthday && nextBirthday.daysUntilBirthday !== null) {
+			const days = nextBirthday.daysUntilBirthday;
+			const when =
+				days === 0
+					? "today"
+					: days === 1
+					? "tomorrow"
+					: `in ${pluralize(days, "day")}`;
+			addStat("cake", `${nextBirthday.name} ${when}`, days <= 7);
+		}
+
+		// Contact you haven't been in touch with for the longest time
+		const longestAgo = this.findMin(contacts, (c) =>
+			c.lastInteraction === null ? null : -c.lastInteraction
+		);
+		if (longestAgo && longestAgo.lastInteraction !== null) {
+			addStat(
+				"clock",
+				`${longestAgo.name}: ${this.contactOps.formatDaysAgo(
+					longestAgo.lastInteraction
+				)}`
+			);
+		}
+
+		return header;
+	}
+
+	/** Contact with the smallest non-null value, or null */
+	private findMin(
+		contacts: ContactWithCountdown[],
+		getValue: (contact: ContactWithCountdown) => number | null
+	): ContactWithCountdown | null {
+		let best: ContactWithCountdown | null = null;
+		let bestValue = Infinity;
+		for (const contact of contacts) {
+			const value = getValue(contact);
+			if (value !== null && value < bestValue) {
+				best = contact;
+				bestValue = value;
+			}
+		}
+		return best;
 	}
 
 	private renderTableHeader(table: HTMLTableElement, sort: SortConfig) {
@@ -120,6 +339,13 @@ export class TableView {
 	) {
 		contacts.forEach((contact) => {
 			const row = table.createEl("tr") as HTMLTableRowElement;
+			this.rows.push({
+				row,
+				searchText: normalizeForSearch(
+					`${contact.name} ${contact.relationship}`
+				),
+				relationship: contact.relationship.trim().toLowerCase(),
+			});
 
 			// Create name cell with click handler
 			const nameCell = this.renderNameCell(contact);
@@ -238,4 +464,12 @@ export class TableView {
 				return contact[column] || null;
 		}
 	}
+}
+
+/** Lowercase and strip accents so "rene" finds "René" */
+function normalizeForSearch(text: string): string {
+	return text
+		.normalize("NFD")
+		.replace(/[\u0300-\u036f]/g, "")
+		.toLowerCase();
 }

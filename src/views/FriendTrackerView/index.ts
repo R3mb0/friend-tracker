@@ -17,6 +17,10 @@ export const VIEW_TYPE_FRIEND_TRACKER = "friend-tracker-view";
 
 export class FriendTrackerView extends ItemView {
 	currentSort: SortConfig;
+	/** Kept across refreshes so file changes don't reset the search */
+	searchQuery = "";
+	/** Lowercase relationship type to show, "" for all */
+	relationshipFilter = "";
 	private tableView: TableView;
 	private isRefreshing = false;
 	private refreshPending = false;
@@ -119,20 +123,38 @@ export class FriendTrackerView extends ItemView {
 
 			const container = this.containerEl.children[1] as HTMLElement;
 			// Keep the scroll position across re-renders
-			const scrollTop =
-				container.querySelector(".friend-tracker-table-container")
-					?.scrollTop ?? 0;
-			const containerScrollTop = container.scrollTop;
+			const scroller = container.querySelector(".friend-tracker-content");
+			const scrollTop = scroller?.scrollTop ?? 0;
+			const scrollLeft = scroller?.scrollLeft ?? 0;
+			// Re-rendering replaces the search input; keep typing uninterrupted
+			const oldSearch = this.tableView.searchInput;
+			const searchFocused =
+				!!oldSearch && oldSearch === document.activeElement;
+			const selection = oldSearch
+				? [oldSearch.selectionStart, oldSearch.selectionEnd]
+				: null;
 
 			container.empty();
-			const tableContainer = container.createDiv();
-			this.tableView.render(tableContainer, contacts, this.currentSort);
+			const layout = container.createDiv({
+				cls: "friend-tracker-layout",
+			});
+			this.tableView.render(layout, contacts, this.currentSort);
 
-			const newTable = container.querySelector(
-				".friend-tracker-table-container"
+			const newScroller = container.querySelector(
+				".friend-tracker-content"
 			);
-			if (newTable) newTable.scrollTop = scrollTop;
-			container.scrollTop = containerScrollTop;
+			if (newScroller) {
+				newScroller.scrollTop = scrollTop;
+				newScroller.scrollLeft = scrollLeft;
+			}
+
+			const newSearch = this.tableView.searchInput;
+			if (searchFocused && newSearch) {
+				newSearch.focus();
+				if (selection) {
+					newSearch.setSelectionRange(selection[0], selection[1]);
+				}
+			}
 		} finally {
 			this.isRefreshing = false;
 		}
