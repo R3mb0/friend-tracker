@@ -2,16 +2,7 @@
 	"compilerOptions": {
 		"baseUrl": ".",
 		"paths": {
-			"@/*": ["src/*"],
-			"@/components/*": ["src/components/*"],
-			"@/pages/*": ["src/pages/*"],
-			"@/types/*": ["src/types/*"],
-			"@/utils/*": ["src/utils/*"],
-			"@/hooks/*": ["src/hooks/*"],
-			"@/contexts/*": ["src/contexts/*"],
-			"@/services/*": ["src/services/*"],
-			"@/styles/*": ["src/styles/*"],
-			"@/assets/*": ["src/assets/*"]
+			"@/*": ["src/*"]
 		},
 		"inlineSourceMap": true,
 		"inlineSources": true,
