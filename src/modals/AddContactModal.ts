@@ -1,9 +1,7 @@
-import { App, Modal, Notice } from "obsidian";
+import { App, Modal, Notice, stringifyYaml } from "obsidian";
 import type FriendTracker from "@/main";
-import { stringifyYaml } from "obsidian";
-import { VIEW_TYPE_FRIEND_TRACKER } from "@/views/FriendTrackerView";
-import { FriendTrackerView } from "@/views/FriendTrackerView";
 import { createRelationshipInput } from "@/components/ContactFields";
+import { getContactFilePath, sanitizeFileName } from "@/utils/file";
 
 export class AddContactModal extends Modal {
 	constructor(app: App, private plugin: FriendTracker) {
@@ -93,10 +91,10 @@ export class AddContactModal extends Modal {
 			cls: "friend-tracker-button button-primary",
 		});
 
-		form.addEventListener("submit", (e) => {
+		form.addEventListener("submit", async (e) => {
 			e.preventDefault();
 			const data: Record<string, string> = {
-				name: nameInput.value,
+				name: nameInput.value.trim(),
 			};
 
 			if (birthdayInput.value) data.birthday = birthdayInput.value;
@@ -124,49 +122,45 @@ export class AddContactModal extends Modal {
 				}
 			}
 
-			if (data.name) {
-				this.onSubmit(data);
+			if (data.name && (await this.onSubmit(data))) {
 				this.close();
 			}
 		});
 	}
 
-	private async onSubmit(data: Record<string, string>) {
-		const fileName = `${data.name}.md`;
-		const filePath = `${this.plugin.settings.contactsFolder}/${fileName}`;
+	/** Creates the contact file. Returns false if the modal should stay open. */
+	private async onSubmit(data: Record<string, string>): Promise<boolean> {
+		if (!sanitizeFileName(data.name)) {
+			new Notice("Please enter a name with valid characters");
+			return false;
+		}
 
-		// Ensure folder exists before creating contact
 		const folder = this.plugin.settings.contactsFolder;
-		if (!this.app.vault.getFolderByPath(folder)) {
-			await this.app.vault.createFolder(folder);
+		const filePath = getContactFilePath(folder, data.name);
+
+		if (this.app.vault.getAbstractFileByPath(filePath)) {
+			new Notice(`A contact named "${data.name}" already exists`);
+			return false;
 		}
 
 		// Create YAML frontmatter
 		const yaml = stringifyYaml(data);
-		const fileContent = `---\n${yaml}\n---\n`;
+		const fileContent = `---\n${yaml.trimEnd()}\n---\n`;
 
 		try {
-			await this.app.vault.create(filePath, fileContent);
-
-			// Wait a moment for the file to be indexed
-			await new Promise((resolve) => setTimeout(resolve, 300));
-
-			// Refresh the Friend Tracker view
-			const friendTrackerLeaves = this.app.workspace.getLeavesOfType(
-				VIEW_TYPE_FRIEND_TRACKER
-			);
-
-			for (const leaf of friendTrackerLeaves) {
-				const view = leaf.view;
-				if (view instanceof FriendTrackerView) {
-					await view.refresh();
-					break;
-				}
+			// Ensure folder exists before creating contact
+			if (!this.app.vault.getFolderByPath(folder)) {
+				await this.app.vault.createFolder(folder);
 			}
 
+			// The Friend Tracker view refreshes itself on file creation
+			await this.app.vault.create(filePath, fileContent);
 			new Notice(`Created contact: ${data.name}`);
+			return true;
 		} catch (error) {
-			new Notice(`Error creating contact: ${error}`);
+			console.error("Error creating contact:", error);
+			new Notice(`Error creating contact: ${error.message ?? error}`);
+			return false;
 		}
 	}
 

@@ -1,5 +1,6 @@
 import { App, Modal } from "obsidian";
 import type { Interaction } from "@/types";
+import { toLocalISODate } from "@/utils/date";
 
 export class InteractionModal extends Modal {
 	private interaction: Interaction | null;
@@ -33,7 +34,7 @@ export class InteractionModal extends Modal {
 				"textarea"
 			) as HTMLTextAreaElement;
 
-			if (dateInput?.value && textInput?.value) {
+			if (dateInput?.value && textInput?.value.trim()) {
 				this.onSubmit(dateInput.value, textInput.value);
 				this.close();
 			}
@@ -45,7 +46,7 @@ export class InteractionModal extends Modal {
 				type: "date",
 				value:
 					this.interaction?.date ||
-					new Date().toISOString().split("T")[0],
+					toLocalISODate(new Date()),
 				required: "true",
 			},
 			cls: "contact-interaction-date-input",

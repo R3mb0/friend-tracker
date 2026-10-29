@@ -1,6 +1,8 @@
-import { Notice, TFile, parseYaml } from "obsidian";
+import { TFile } from "obsidian";
 import type FriendTracker from "@/main";
-import type { ContactWithCountdown } from "@/types";
+import type { ContactWithCountdown, Interaction } from "@/types";
+import { splitFrontmatter } from "@/utils/frontmatter";
+import { daysBetween, getToday, parseLocalDate, pluralize } from "@/utils/date";
 
 export class ContactOperations {
 	constructor(private plugin: FriendTracker) {}
@@ -10,44 +12,42 @@ export class ContactOperations {
 		const vault = this.plugin.app.vault;
 		const folderPath = vault.getFolderByPath(folder);
 
-		if (!folderPath) {
-			new Notice("Friend Tracker folder not found.");
-			return [];
-		}
+		// A missing folder simply means there are no contacts yet
+		if (!folderPath) return [];
 
-		const files = folderPath.children.filter(
-			(file) => file instanceof TFile
-		);
 		const contacts: ContactWithCountdown[] = [];
 
-		for (const file of files) {
-			if (!(file instanceof TFile)) continue;
+		for (const file of folderPath.children) {
+			if (!(file instanceof TFile) || file.extension !== "md") continue;
 
 			try {
 				// Read the file content directly instead of relying on metadata cache
-				const content = await vault.read(file);
-				const yamlMatch = content.match(/^---\n([\s\S]*?)\n---/);
+				const content = await vault.cachedRead(file);
+				const { frontmatter: metadata } = splitFrontmatter(content);
 
-				if (yamlMatch) {
-					const metadata = parseYaml(yamlMatch[1]);
-
-					const lastInteraction =
-						metadata.interactions?.length > 0
-							? this.formatDaysAgo(metadata.interactions[0].date)
-							: null;
+				if (metadata) {
+					const birthday =
+						typeof metadata.birthday === "string"
+							? metadata.birthday
+							: "";
 
 					contacts.push({
-						name: metadata.name || "Unknown",
-						birthday: metadata.birthday || "",
-						formattedBirthday: this.formatBirthday(
-							metadata.birthday
+						name:
+							typeof metadata.name === "string" && metadata.name
+								? metadata.name
+								: file.basename,
+						birthday,
+						formattedBirthday: this.formatBirthday(birthday),
+						relationship:
+							typeof metadata.relationship === "string"
+								? metadata.relationship
+								: "",
+						age: this.calculateAge(birthday),
+						daysUntilBirthday:
+							this.calculateDaysUntilBirthday(birthday),
+						lastInteraction: this.calculateDaysSinceLastInteraction(
+							metadata.interactions
 						),
-						relationship: metadata.relationship || "",
-						age: this.calculateAge(metadata.birthday),
-						daysUntilBirthday: this.calculateDaysUntilBirthday(
-							metadata.birthday
-						),
-						lastInteraction,
 						file,
 					});
 				}
@@ -63,20 +63,10 @@ export class ContactOperations {
 	}
 
 	private calculateAge(birthday: string): number | null {
-		if (!birthday) return null;
+		const birthDate = parseLocalDate(birthday);
+		if (!birthDate) return null;
 
-		// Parse the birthday and set it to local midnight
-		const [birthYear, birthMonth, birthDay] = birthday
-			.split("-")
-			.map(Number);
-		const birthDate = new Date(birthYear, birthMonth - 1, birthDay);
-		birthDate.setHours(0, 0, 0, 0);
-
-		if (isNaN(birthDate.getTime())) return null;
-
-		const today = new Date();
-		today.setHours(0, 0, 0, 0);
-
+		const today = getToday();
 		let age = today.getFullYear() - birthDate.getFullYear();
 		const monthDiff = today.getMonth() - birthDate.getMonth();
 
@@ -91,20 +81,10 @@ export class ContactOperations {
 	}
 
 	public calculateDetailedAge(birthday: string): string {
-		if (!birthday) return "";
+		const birthDate = parseLocalDate(birthday);
+		if (!birthDate) return "";
 
-		// Parse the birthday and set it to local midnight
-		const [birthYear, birthMonth, birthDay] = birthday
-			.split("-")
-			.map(Number);
-		const birthDate = new Date(birthYear, birthMonth - 1, birthDay);
-		birthDate.setHours(0, 0, 0, 0);
-
-		if (isNaN(birthDate.getTime())) return "";
-
-		// Get today at local midnight
-		const today = new Date();
-		today.setHours(0, 0, 0, 0);
+		const today = getToday();
 
 		let years = today.getFullYear() - birthDate.getFullYear();
 		let months = today.getMonth() - birthDate.getMonth();
@@ -128,82 +108,72 @@ export class ContactOperations {
 			months += 12;
 		}
 
+		if (years < 0) return "";
+
 		// Format the output
 		const parts = [];
 
-		if (years > 0) {
-			parts.push(`${years} ${years === 1 ? "year" : "years"}`);
-		}
+		if (years > 0) parts.push(pluralize(years, "year"));
+		if (months > 0) parts.push(pluralize(months, "month"));
+		if (days > 0) parts.push(pluralize(days, "day"));
 
-		if (months > 0) {
-			parts.push(`${months} ${months === 1 ? "month" : "months"}`);
-		}
-
-		if (days > 0) {
-			parts.push(`${days} ${days === 1 ? "day" : "days"}`);
-		}
-
+		if (parts.length === 0) return "Born today";
 		return parts.join(", ") + " old";
 	}
 
-	private formatBirthday(dateStr: string): string {
-		if (!dateStr) return "";
+	public formatBirthday(dateStr: string, withYear = false): string {
+		const birthDate = parseLocalDate(dateStr);
+		if (!birthDate) return dateStr || "";
 
-		// Parse the birthday and set it to local midnight
-		const [birthYear, birthMonth, birthDay] = dateStr
-			.split("-")
-			.map(Number);
-		const birthDate = new Date(birthYear, birthMonth - 1, birthDay);
-		birthDate.setHours(0, 0, 0, 0);
-
-		if (isNaN(birthDate.getTime())) return dateStr;
-
-		return birthDate.toLocaleDateString("en-US", {
+		return birthDate.toLocaleDateString(undefined, {
 			month: "long",
 			day: "numeric",
+			...(withYear && { year: "numeric" }),
 		});
 	}
 
 	public calculateDaysUntilBirthday(birthday: string): number | null {
-		if (!birthday) return null;
+		const birthDate = parseLocalDate(birthday);
+		if (!birthDate) return null;
 
-		// Parse the birthday and set it to local midnight
-		const [birthYear, birthMonth, birthDay] = birthday
-			.split("-")
-			.map(Number);
-		const birthDate = new Date(birthYear, birthMonth - 1, birthDay);
-		birthDate.setHours(0, 0, 0, 0);
-
-		if (isNaN(birthDate.getTime())) return null;
-
-		// Get today at local midnight
-		const today = new Date();
-		today.setHours(0, 0, 0, 0);
+		const today = getToday();
 
 		// Create this year's birthday at local midnight
-		const thisYearBirthday = new Date(
+		const nextBirthday = new Date(
 			today.getFullYear(),
 			birthDate.getMonth(),
 			birthDate.getDate()
 		);
-		thisYearBirthday.setHours(0, 0, 0, 0);
 
 		// If this year's birthday has already passed, use next year's birthday
-		if (thisYearBirthday < today) {
-			thisYearBirthday.setFullYear(today.getFullYear() + 1);
+		if (nextBirthday < today) {
+			nextBirthday.setFullYear(today.getFullYear() + 1);
 		}
 
-		// Calculate days difference
-		const diffTime = thisYearBirthday.getTime() - today.getTime();
-		return Math.round(diffTime / (1000 * 60 * 60 * 24));
+		return daysBetween(today, nextBirthday);
 	}
 
-	private formatDaysAgo(dateStr: string): string {
-		const date = new Date(dateStr);
-		const today = new Date();
-		const diffTime = today.getTime() - date.getTime();
-		const diffDays = Math.floor(diffTime / (1000 * 60 * 60 * 24));
+	private calculateDaysSinceLastInteraction(
+		interactions: unknown
+	): number | null {
+		if (!Array.isArray(interactions)) return null;
 
-		return `${diffDays} days`;
+		// Don't rely on the stored order, pick the most recent date
+		const latest = (interactions as Interaction[])
+			.map((interaction) => parseLocalDate(interaction?.date))
+			.filter((date): date is Date => date !== null)
+			.reduce<Date | null>(
+				(max, date) => (!max || date > max ? date : max),
+				null
+			);
+
+		return latest ? daysBetween(latest, getToday()) : null;
+	}
+
+	public formatDaysAgo(days: number | null): string {
+		if (days === null) return "";
+		if (days === 0) return "Today";
+		if (days < 0) return `In ${pluralize(-days, "day")}`;
+		return `${pluralize(days, "day")} ago`;
 	}
 }

@@ -1,6 +1,7 @@
 import { setIcon } from "obsidian";
 import type { ContactPageView } from "@/views/ContactPageView";
 import type { Interaction } from "@/types";
+import { parseLocalDate } from "@/utils/date";
 
 export class InteractionView {
 	constructor(private view: ContactPageView) {}
@@ -10,11 +11,15 @@ export class InteractionView {
 			cls: "contact-interactions-list",
 		});
 
-		const sortedInteractions = [...interactions].sort(
-			(a, b) => new Date(b.date).getTime() - new Date(a.date).getTime()
-		);
+		// Keep the original index so edit/delete target the stored entry
+		const sortedInteractions = interactions
+			.map((interaction, index) => ({ interaction, index }))
+			.sort(
+				(a, b) =>
+					getTime(b.interaction.date) - getTime(a.interaction.date)
+			);
 
-		sortedInteractions.forEach((interaction, index) => {
+		sortedInteractions.forEach(({ interaction, index }) => {
 			this.createInteractionItem(interactionsList, interaction, index);
 		});
 	}
@@ -28,14 +33,15 @@ export class InteractionView {
 			cls: "contact-interaction-item",
 		});
 
-		// Format date nicely, adjusting for timezone
-		const [year, month, day] = interaction.date.split("-").map(Number);
-		const date = new Date(year, month - 1, day);
-		const formattedDate = date.toLocaleDateString(undefined, {
+		const date = parseLocalDate(interaction.date);
+		const dateFormat: Intl.DateTimeFormatOptions = {
 			year: "numeric",
 			month: "short",
 			day: "numeric",
-		});
+		};
+		const formattedDate = date
+			? date.toLocaleDateString(undefined, dateFormat)
+			: String(interaction.date ?? "");
 
 		// Date
 		interactionEl.createEl("div", {
@@ -74,4 +80,8 @@ export class InteractionView {
 			this.view.deleteInteraction(index);
 		});
 	}
+}
+
+function getTime(date: unknown): number {
+	return parseLocalDate(date)?.getTime() ?? 0;
 }

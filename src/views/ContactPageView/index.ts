@@ -4,25 +4,31 @@ import {
 	Notice,
 	TFile,
 	setIcon,
-	parseYaml,
 	MarkdownRenderer,
+	ViewStateResult,
 } from "obsidian";
 import type FriendTracker from "@/main";
-import { ContactFields } from "@/components/ContactFields";
+import { createRelationshipInput } from "@/components/ContactFields";
 import { InteractionView } from "@/components/InteractionView";
-import type { Interaction } from "@/types";
+import type { ContactData, Interaction } from "@/types";
 import { AddFieldModal } from "@/modals/AddFieldModal";
 import { InteractionModal } from "@/modals/InteractionModal";
-import { VIEW_TYPE_FRIEND_TRACKER } from "@/views/FriendTrackerView";
-import { FriendTrackerView } from "@/views/FriendTrackerView";
-import { STANDARD_FIELDS, SYSTEM_FIELDS } from "@/constants";
+import {
+	SPECIAL_INPUT_FIELDS,
+	STANDARD_FIELDS,
+	SYSTEM_FIELDS,
+} from "@/constants";
+import { splitFrontmatter } from "@/utils/frontmatter";
+import { parseLocalDate } from "@/utils/date";
+import { getContactFilePath, sanitizeFileName } from "@/utils/file";
 
 export const VIEW_TYPE_CONTACT_PAGE = "contact-page-view";
 
 export class ContactPageView extends ItemView {
 	private _file: TFile | null = null;
-	private contactData: any = {};
-	private contactFields: ContactFields;
+	private contactData: ContactData = {};
+	private lastContent = "";
+	private pendingSaves = 0;
 	private interactionView: InteractionView;
 	public plugin: FriendTracker;
 	private activeTab: "notes" | "interactions" | "markdown";
@@ -45,7 +51,6 @@ export class ContactPageView extends ItemView {
 	constructor(leaf: WorkspaceLeaf, private _plugin: FriendTracker) {
 		super(leaf);
 		this.plugin = _plugin;
-		this.contactFields = new ContactFields(this);
 		this.interactionView = new InteractionView(this);
 		this.activeTab = this.plugin.settings.defaultActiveTab;
 	}
@@ -62,12 +67,49 @@ export class ContactPageView extends ItemView {
 		return this._file;
 	}
 
-	async setState(state: any, result: any) {
-		const file = this.app.vault.getFileByPath(state.filePath);
+	async setState(state: unknown, result: ViewStateResult) {
+		const filePath = (state as { filePath?: unknown } | null)?.filePath;
+		const file =
+			typeof filePath === "string"
+				? this.app.vault.getFileByPath(filePath)
+				: null;
 		if (file) {
 			await this.setFile(file);
 		}
 		await super.setState(state, result);
+	}
+
+	async onOpen() {
+		// Keep the page in sync with edits made elsewhere (e.g. the editor).
+		// Our own saves also trigger "modify"; those are skipped so open
+		// inputs and edit mode are not reset.
+		this.registerEvent(
+			this.app.vault.on("modify", (file) => {
+				if (file === this._file && this.pendingSaves === 0) {
+					this.reloadIfChanged();
+				}
+			})
+		);
+		this.registerEvent(
+			this.app.vault.on("delete", (file) => {
+				if (file === this._file) this.leaf.detach();
+			})
+		);
+	}
+
+	private async reloadIfChanged() {
+		const file = this._file;
+		if (!file) return;
+		try {
+			const content = await this.app.vault.read(file);
+			if (this._file !== file || content === this.lastContent) return;
+			this.lastContent = content;
+			this.contactData = (splitFrontmatter(content).frontmatter ??
+				{}) as ContactData;
+			this.render();
+		} catch (error) {
+			console.error(`Error reloading contact file ${file.path}:`, error);
+		}
 	}
 
 	getState() {
@@ -84,8 +126,9 @@ export class ContactPageView extends ItemView {
 			const content = await this.app.vault.read(file);
 			// Only update if this._file is still the same file
 			if (this._file?.path !== currentFilePath) return;
-			const yamlMatch = content.match(/^---\n([\s\S]*?)\n---/);
-			this.contactData = yamlMatch ? parseYaml(yamlMatch[1]) : {};
+			this.lastContent = content;
+			this.contactData = (splitFrontmatter(content).frontmatter ??
+				{}) as ContactData;
 		} catch (error) {
 			console.error(`Error reading contact file ${file.path}:`, error);
 			this.contactData = {};
@@ -207,7 +250,8 @@ export class ContactPageView extends ItemView {
 		setIcon(editButton, "pencil");
 
 		// Add age display if birthday exists
-		if (this.contactData.birthday) {
+		const birthDate = parseLocalDate(this.contactData.birthday);
+		if (this.contactData.birthday && birthDate) {
 			const ageText = this.plugin.contactOperations.calculateDetailedAge(
 				this.contactData.birthday
 			);
@@ -217,9 +261,9 @@ export class ContactPageView extends ItemView {
 			});
 
 			// Add both zodiac displays
-			const [year, month, day] = this.contactData.birthday
-				.split("-")
-				.map(Number);
+			const year = birthDate.getFullYear();
+			const month = birthDate.getMonth() + 1;
+			const day = birthDate.getDate();
 			const animals = [
 				"Rat",
 				"Ox",
@@ -234,7 +278,7 @@ export class ContactPageView extends ItemView {
 				"Dog",
 				"Pig",
 			];
-			const chineseZodiac = animals[(year - 4) % 12];
+			const chineseZodiac = animals[(((year - 4) % 12) + 12) % 12];
 			const westernZodiac = this.getZodiacSign(month, day);
 
 			const season = this.getSeason(month, day);
@@ -292,94 +336,80 @@ export class ContactPageView extends ItemView {
 			}
 		}
 
+		const setEditing = (editing: boolean) => {
+			nameText.classList.toggle("editing", editing);
+			nameInput.classList.toggle("editing", editing);
+			setIcon(editButton, editing ? "checkmark" : "pencil");
+		};
+
+		// Keep focus in the input so clicking the button doesn't blur it
+		// (which would fire "change" and save twice)
+		editButton.addEventListener("mousedown", (e) => e.preventDefault());
 		editButton.addEventListener("click", () => {
 			if (!nameInput.classList.contains("editing")) {
-				nameText.classList.add("editing");
-				nameInput.classList.add("editing");
-				setIcon(editButton, "checkmark");
+				setEditing(true);
 				nameInput.focus();
 			} else {
 				saveNameChange();
 			}
 		});
 
+		let isSaving = false;
 		const saveNameChange = async () => {
-			if (!this._file) return;
-			const newName = nameInput.value.trim();
-			if (newName) {
-				this.contactData.name = nameInput.value;
-				await this.saveContactData();
+			if (!this._file || isSaving) return;
+			if (!nameInput.classList.contains("editing")) return;
+			isSaving = true;
 
-				// Rename the file
-				if (this._file.parent) {
-					const newPath = `${this._file.parent.path}/${newName}.md`;
+			try {
+				const newName = nameInput.value.trim();
+				const currentName = this.contactData.name ?? "";
+
+				if (!newName || newName === currentName) {
+					nameInput.value = currentName;
+					return;
+				}
+
+				if (!sanitizeFileName(newName)) {
+					new Notice("Please enter a name with valid characters");
+					nameInput.value = currentName;
+					return;
+				}
+
+				// Rename the file first so name and file name stay in sync
+				const folder = this._file.parent?.path ?? "";
+				const newPath = getContactFilePath(folder, newName);
+				if (newPath !== this._file.path) {
+					if (this.app.vault.getAbstractFileByPath(newPath)) {
+						new Notice(
+							`A contact named "${newName}" already exists`
+						);
+						nameInput.value = currentName;
+						return;
+					}
 					try {
 						await this.app.fileManager.renameFile(
 							this._file,
 							newPath
 						);
-						new Notice(`Updated contact name`);
-
-						// Refresh Friend Tracker view
-						const friendTrackerLeaves =
-							this.app.workspace.getLeavesOfType(
-								VIEW_TYPE_FRIEND_TRACKER
-							);
-						for (const leaf of friendTrackerLeaves) {
-							const view = await leaf.view;
-							if (view instanceof FriendTrackerView) {
-								await view.refresh();
-								break;
-							}
-						}
 					} catch (error) {
 						new Notice(`Error updating file name: ${error}`);
+						nameInput.value = currentName;
+						return;
 					}
 				}
+
+				this.contactData.name = newName;
+				await this.saveContactData();
+				new Notice(`Updated contact name`);
+			} finally {
+				nameText.textContent =
+					this.contactData.name || "Unnamed Contact";
+				setEditing(false);
+				isSaving = false;
 			}
-			nameText.textContent = nameInput.value || "Unnamed Contact";
-			nameText.classList.remove("editing");
-			nameInput.classList.remove("editing");
-			setIcon(editButton, "pencil");
 		};
 
 		nameInput.addEventListener("change", saveNameChange);
-	}
-
-	private calculateDetailedAge(birthday: string): string {
-		const birthDate = new Date(birthday + "T00:00:00Z");
-		const today = new Date();
-
-		// Reset times to midnight UTC to ensure consistent date comparison
-		const todayUTC = new Date(
-			Date.UTC(today.getFullYear(), today.getMonth(), today.getDate())
-		);
-
-		let years = todayUTC.getUTCFullYear() - birthDate.getUTCFullYear();
-		let months = todayUTC.getUTCMonth() - birthDate.getUTCMonth();
-		let days = todayUTC.getUTCDate() - birthDate.getUTCDate();
-
-		// Adjust for negative days
-		if (days < 0) {
-			months--;
-			// Get last day of previous month
-			const lastMonth = new Date(
-				Date.UTC(todayUTC.getFullYear(), todayUTC.getMonth(), 0)
-			);
-			days += lastMonth.getUTCDate();
-		}
-
-		// Adjust for negative months
-		if (months < 0) {
-			years--;
-			months += 12;
-		}
-
-		// Format the output
-		if (days === 0) {
-			return `${years} years, ${months} months old`;
-		}
-		return `${years} years, ${months} months, ${days} days old`;
 	}
 
 	private calculateDaysUntilBirthday(birthday: string): number | null {
@@ -499,21 +529,11 @@ export class ContactPageView extends ItemView {
 					});
 
 					// Format birthday in view mode
+					const ops = this.plugin.contactOperations;
 					const displayValue =
-						key === "birthday" && value
-							? (() => {
-									const [year, month, day] = (value as string)
-										.split("-")
-										.map(Number);
-									const date = new Date(year, month - 1, day);
-									date.setHours(0, 0, 0, 0);
-									return date.toLocaleDateString("en-US", {
-										month: "long",
-										day: "numeric",
-										year: "numeric",
-									});
-							  })()
-							: value;
+						key === "birthday"
+							? ops.formatBirthday(String(value), true)
+							: String(value);
 
 					field.createEl("div", {
 						cls: "contact-field-value",
@@ -557,7 +577,7 @@ export class ContactPageView extends ItemView {
 			Object.entries(this.contactData)
 				.filter(([key]) => !excludedFields.includes(key.toLowerCase()))
 				.forEach(([key, value]) => {
-					this.createInfoField(fieldsContainer, key, value as string);
+					this.createInfoField(fieldsContainer, key, value);
 				});
 
 			// Add custom field button
@@ -588,7 +608,7 @@ export class ContactPageView extends ItemView {
 	private createInfoField(
 		container: HTMLElement,
 		field: string,
-		value: string
+		value: unknown
 	) {
 		const fieldContainer = container.createEl("div", {
 			cls: "contact-field",
@@ -598,15 +618,38 @@ export class ContactPageView extends ItemView {
 			text: field,
 		});
 
+		const stringValue = value == null ? "" : String(value);
+
+		if (field === STANDARD_FIELDS.RELATIONSHIP) {
+			// Shared input that also provides the suggestion list
+			const input = createRelationshipInput(
+				fieldContainer,
+				this.plugin,
+				stringValue,
+				async (newValue) => {
+					const relationship = newValue.trim().toLowerCase();
+					await this.updateContactData(field, relationship);
+					if (
+						relationship &&
+						!this.getRelationshipTypes().includes(relationship)
+					) {
+						await this.addRelationshipType(relationship);
+					}
+				}
+			);
+			input.className = "contact-field-input";
+			return;
+		}
+
 		const input = fieldContainer.createEl("input", {
 			cls: "contact-field-input",
 			attr: {
-				type: field === "birthday" ? "date" : "text",
+				type:
+					SPECIAL_INPUT_FIELDS[
+						field as keyof typeof SPECIAL_INPUT_FIELDS
+					] ?? "text",
 				placeholder: `Enter ${field.toLowerCase()}`,
-				value: value || "",
-				...(field === "relationship" && {
-					list: "relationship-types",
-				}),
+				value: stringValue,
 			},
 		});
 
@@ -691,11 +734,18 @@ export class ContactPageView extends ItemView {
 			cls: "contact-extras-header",
 		});
 
-		// Add helper text if no markdown content
-		const content = await this.app.vault.read(this._file);
-		const extrasContent =
-			content.split(/^---\n([\s\S]*?)\n---/).pop() || "";
+		let extrasContent = "";
+		try {
+			const content = await this.app.vault.read(this._file);
+			extrasContent = splitFrontmatter(content).body;
+		} catch (error) {
+			console.error(
+				`Error reading extras from file ${this._file.path}:`,
+				error
+			);
+		}
 
+		// Add helper text if no markdown content
 		if (!extrasContent.trim()) {
 			headerContainer.createEl("div", {
 				cls: "section-helper-text",
@@ -712,53 +762,48 @@ export class ContactPageView extends ItemView {
 			this.app.workspace.openLinkText(this._file?.path || "", "", true);
 		});
 
-		try {
-			const content = await this.app.vault.read(this._file);
-			const extrasContent =
-				content.split(/^---\n([\s\S]*?)\n---/).pop() || "";
+		if (!extrasContent.trim()) return;
 
-			if (extrasContent.trim()) {
-				const contentDiv = extrasSection.createEl("div", {
-					cls: "contact-extras-content",
-				});
+		const contentDiv = extrasSection.createEl("div", {
+			cls: "contact-extras-content",
+		});
 
-				await MarkdownRenderer.renderMarkdown(
-					extrasContent,
-					contentDiv,
-					this._file.path,
-					this
+		await MarkdownRenderer.render(
+			this.app,
+			extrasContent,
+			contentDiv,
+			this._file.path,
+			this
+		);
+
+		// Add click handlers for internal links; external links
+		// (http, mailto, ...) keep their default behavior
+		contentDiv.addEventListener("click", (event) => {
+			const anchor = (event.target as HTMLElement).closest("a");
+			if (!anchor) return;
+
+			if (anchor.classList.contains("internal-link")) {
+				event.preventDefault();
+				const linkText =
+					anchor.getAttribute("data-href") ??
+					anchor.getAttribute("href") ??
+					"";
+				this.app.workspace.openLinkText(
+					linkText,
+					this._file?.path || "",
+					event.ctrlKey || event.metaKey
 				);
-
-				// Add click handlers for internal links
-				contentDiv.addEventListener("click", (event) => {
-					const target = event.target as HTMLElement;
-					if (target.tagName === "A") {
-						const anchor = target as HTMLAnchorElement;
-						const href = anchor.getAttribute("href");
-
-						if (href?.startsWith("#")) {
-							// Handle internal anchor links
-							event.preventDefault();
-							const targetEl = contentDiv.querySelector(href);
-							targetEl?.scrollIntoView();
-						} else if (!href?.startsWith("http")) {
-							// Handle internal Obsidian links
-							event.preventDefault();
-							this.app.workspace.openLinkText(
-								href || "",
-								this._file?.path || "",
-								event.ctrlKey || event.metaKey
-							);
-						}
-					}
-				});
+			} else if (anchor.getAttribute("href")?.startsWith("#")) {
+				// Handle internal anchor links
+				event.preventDefault();
+				const href = anchor.getAttribute("href") ?? "";
+				try {
+					contentDiv.querySelector(href)?.scrollIntoView();
+				} catch {
+					// Ignore anchors that are not valid selectors
+				}
 			}
-		} catch (error) {
-			console.error(
-				`Error reading extras from file ${this._file.path}:`,
-				error
-			);
-		}
+		});
 	}
 
 	private adjustTextareaHeight(textarea: HTMLTextAreaElement) {
@@ -772,27 +817,35 @@ export class ContactPageView extends ItemView {
 
 	async saveContactData() {
 		if (!this._file) return;
+		const file = this._file;
 
 		// Sort interactions by date in descending order (newest first)
-		if (this.contactData.interactions) {
+		if (Array.isArray(this.contactData.interactions)) {
+			const getTime = (interaction: Interaction) =>
+				parseLocalDate(interaction?.date)?.getTime() ?? 0;
 			this.contactData.interactions.sort(
-				(a: Interaction, b: Interaction) =>
-					new Date(b.date).getTime() - new Date(a.date).getTime()
+				(a, b) => getTime(b) - getTime(a)
 			);
 		}
 
-		await this.app.fileManager.processFrontMatter(
-			this._file,
-			(frontmatter) => {
-				Object.assign(frontmatter, this.contactData);
-			}
-		);
+		this.pendingSaves++;
+		try {
+			await this.app.fileManager.processFrontMatter(
+				file,
+				(frontmatter) => {
+					Object.assign(frontmatter, this.contactData);
+				}
+			);
+			this.lastContent = await this.app.vault.read(file);
+		} finally {
+			this.pendingSaves--;
+		}
 	}
 
 	// Modal methods
 	private async openAddFieldModal() {
 		const modal = new AddFieldModal(this.app, async (fieldName) => {
-			if (!this.contactData[fieldName]) {
+			if (!(fieldName in this.contactData)) {
 				this.contactData[fieldName] = "";
 				await this.saveContactData();
 				this.render();
@@ -839,6 +892,7 @@ export class ContactPageView extends ItemView {
 	}
 
 	public async deleteInteraction(index: number) {
+		if (!Array.isArray(this.contactData.interactions)) return;
 		this.contactData.interactions.splice(index, 1);
 		await this.saveContactData();
 		this.render();

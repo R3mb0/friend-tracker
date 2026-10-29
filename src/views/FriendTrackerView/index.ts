@@ -1,7 +1,13 @@
-import { ItemView, WorkspaceLeaf, EventRef, TFile, Platform } from "obsidian";
+import {
+	ItemView,
+	WorkspaceLeaf,
+	TAbstractFile,
+	TFile,
+	Platform,
+	debounce,
+} from "obsidian";
 import type FriendTracker from "@/main";
 import { TableView } from "./TableView";
-import { ContactOperations } from "@/services/ContactOperations";
 import { VIEW_TYPE_CONTACT_PAGE } from "@/views/ContactPageView";
 import type { SortConfig, ContactWithCountdown } from "@/types";
 import { AddContactModal } from "@/modals/AddContactModal";
@@ -12,10 +18,8 @@ export const VIEW_TYPE_FRIEND_TRACKER = "friend-tracker-view";
 export class FriendTrackerView extends ItemView {
 	currentSort: SortConfig;
 	private tableView: TableView;
-	private contactOps: ContactOperations;
-	private fileChangeHandler: EventRef | null = null;
 	private isRefreshing = false;
-	private _contacts: ContactWithCountdown[] | null = null;
+	private refreshPending = false;
 
 	constructor(leaf: WorkspaceLeaf, private plugin: FriendTracker) {
 		super(leaf);
@@ -23,11 +27,8 @@ export class FriendTrackerView extends ItemView {
 			column: this.plugin.settings.defaultSortColumn,
 			direction: this.plugin.settings.defaultSortDirection,
 		};
-		this.tableView = new TableView(this);
-		this.contactOps = new ContactOperations(this.plugin);
+		this.tableView = new TableView(this, this.plugin.contactOperations);
 	}
-
-	// ... rest of the implementation from earlier
 
 	public async openAddContactModal() {
 		const modal = new AddContactModal(this.app, this.plugin);
@@ -68,7 +69,6 @@ export class FriendTrackerView extends ItemView {
 	public async openDeleteModal(file: TFile) {
 		const modal = new DeleteContactModal(this.app, file, async () => {
 			await this.app.fileManager.trashFile(file);
-			await this.refresh();
 		});
 		modal.open();
 	}
@@ -82,110 +82,69 @@ export class FriendTrackerView extends ItemView {
 	}
 
 	async onOpen() {
-		this.registerEvent(
-			this.app.vault.on("modify", (file) => {
-				if (file instanceof TFile && this.isContactFile(file)) {
-					setTimeout(() => this.refresh(), 100);
-				}
-			})
-		);
+		// Batch bursts of file events into a single refresh
+		const scheduleRefresh = debounce(() => this.refresh(), 200, true);
+		const onContactChange = (file: TAbstractFile, oldPath?: string) => {
+			if (this.isInContactsFolder(file.path)) {
+				scheduleRefresh();
+			} else if (oldPath && this.isInContactsFolder(oldPath)) {
+				scheduleRefresh();
+			}
+		};
 
-		// Add visibility change handler
-		document.addEventListener(
-			"visibilitychange",
-			this.handleVisibilityChange
-		);
-		window.addEventListener("focus", this.handleWindowFocus);
+		this.registerEvent(this.app.vault.on("modify", onContactChange));
+		this.registerEvent(this.app.vault.on("create", onContactChange));
+		this.registerEvent(this.app.vault.on("delete", onContactChange));
+		this.registerEvent(this.app.vault.on("rename", onContactChange));
+
+		// Refresh when returning to the app (e.g. after a sync on mobile)
+		this.registerDomEvent(document, "visibilitychange", () => {
+			if (document.visibilityState === "visible") scheduleRefresh();
+		});
+		this.registerDomEvent(window, "focus", () => scheduleRefresh());
 
 		await this.refresh();
 	}
 
-	onunload() {
-		document.removeEventListener(
-			"visibilitychange",
-			this.handleVisibilityChange
-		);
-		window.removeEventListener("focus", this.handleWindowFocus);
-	}
-
-	private handleVisibilityChange = () => {
-		if (document.visibilityState === "visible") {
-			this.refresh();
-		}
-	};
-
-	private handleWindowFocus = () => {
-		this.refresh();
-	};
-
 	async refresh() {
-		if (this.isRefreshing) return;
+		// Don't drop refreshes requested while one is running
+		if (this.isRefreshing) {
+			this.refreshPending = true;
+			return;
+		}
 		this.isRefreshing = true;
 
 		try {
-			// Clear any cached data
-			this._contacts = null;
+			const contacts = await this.plugin.contactOperations.getContacts();
 
-			// Get the container and completely clear it
 			const container = this.containerEl.children[1] as HTMLElement;
-			// Remove all child elements
-			while (container.firstChild) {
-				container.removeChild(container.firstChild);
-			}
+			// Keep the scroll position across re-renders
+			const scrollTop =
+				container.querySelector(".friend-tracker-table-container")
+					?.scrollTop ?? 0;
+			const containerScrollTop = container.scrollTop;
 
-			// Get contacts and apply sort if needed
-			const contacts = await this.contactOps.getContacts();
-			const sortConfig: SortConfig =
-				this.currentSort.column && this.currentSort.direction
-					? this.currentSort
-					: {
-							column: "name" as keyof Omit<
-								ContactWithCountdown,
-								"file"
-							>,
-							direction: "asc" as "asc" | "desc",
-					  };
-
-			const sortedContacts = contacts.sort((a, b) => {
-				const valueA = a[sortConfig.column];
-				const valueB = b[sortConfig.column];
-
-				// Handle null values in sorting
-				if (valueA === null && valueB === null) return 0;
-				if (valueA === null)
-					return sortConfig.direction === "asc" ? -1 : 1;
-				if (valueB === null)
-					return sortConfig.direction === "asc" ? 1 : -1;
-
-				if (valueA < valueB)
-					return sortConfig.direction === "asc" ? -1 : 1;
-				if (valueA > valueB)
-					return sortConfig.direction === "asc" ? 1 : -1;
-				return 0;
-			});
-
-			// Create a fresh container for the table
+			container.empty();
 			const tableContainer = container.createDiv();
-			await this.tableView.render(
-				tableContainer,
-				sortedContacts,
-				sortConfig
+			this.tableView.render(tableContainer, contacts, this.currentSort);
+
+			const newTable = container.querySelector(
+				".friend-tracker-table-container"
 			);
+			if (newTable) newTable.scrollTop = scrollTop;
+			container.scrollTop = containerScrollTop;
 		} finally {
 			this.isRefreshing = false;
 		}
+
+		if (this.refreshPending) {
+			this.refreshPending = false;
+			await this.refresh();
+		}
 	}
 
-	private isContactFile(file: TFile): boolean {
+	private isInContactsFolder(path: string): boolean {
 		const contactFolder = this.plugin.settings.contactsFolder;
-		return file.path.startsWith(contactFolder + "/");
-	}
-
-	private async sortContacts(
-		column: keyof Omit<ContactWithCountdown, "file">,
-		direction: "asc" | "desc"
-	) {
-		this.currentSort = { column, direction };
-		await this.refresh();
+		return path.startsWith(contactFolder + "/");
 	}
 }

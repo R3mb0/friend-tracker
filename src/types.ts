@@ -19,7 +19,8 @@ export interface Contact {
 export interface ContactWithCountdown extends Contact {
 	formattedBirthday: string;
 	daysUntilBirthday: number | null;
-	lastInteraction: string | null;
+	/** Days since the most recent interaction */
+	lastInteraction: number | null;
 }
 
 export interface SortConfig {
@@ -30,6 +31,16 @@ export interface SortConfig {
 export interface Interaction {
 	date: string;
 	text: string;
+}
+
+/** Frontmatter of a contact file */
+export interface ContactData {
+	name?: string;
+	birthday?: string;
+	relationship?: string;
+	notes?: string;
+	interactions?: Interaction[];
+	[key: string]: unknown;
 }
 
 export const DEFAULT_SETTINGS: FriendTrackerSettings = {

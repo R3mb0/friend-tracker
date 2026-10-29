@@ -1,11 +1,18 @@
 import { setIcon } from "obsidian";
 import type { FriendTrackerView } from "./index";
 import type { ContactWithCountdown, SortConfig } from "@/types";
+import type { ContactOperations } from "@/services/ContactOperations";
+import { parseLocalDate, pluralize } from "@/utils/date";
+
+type SortColumn = SortConfig["column"];
 
 export class TableView {
-	constructor(private view: FriendTrackerView) {}
+	constructor(
+		private view: FriendTrackerView,
+		private contactOps: ContactOperations
+	) {}
 
-	async render(
+	render(
 		container: HTMLElement,
 		contacts: ContactWithCountdown[],
 		sort: SortConfig
@@ -49,7 +56,7 @@ export class TableView {
 		}) as HTMLTableElement;
 
 		this.renderTableHeader(table, sort);
-		this.renderTableRows(table, contacts);
+		this.renderTableRows(table, this.sortContacts(contacts, sort));
 	}
 
 	private renderTableHeader(table: HTMLTableElement, sort: SortConfig) {
@@ -111,13 +118,7 @@ export class TableView {
 		table: HTMLTableElement,
 		contacts: ContactWithCountdown[]
 	) {
-		// Sort contacts based on current sort configuration
-		const sortedContacts = this.sortContacts(
-			contacts,
-			this.view.currentSort
-		);
-
-		sortedContacts.forEach((contact) => {
+		contacts.forEach((contact) => {
 			const row = table.createEl("tr") as HTMLTableRowElement;
 
 			// Create name cell with click handler
@@ -129,21 +130,23 @@ export class TableView {
 			});
 
 			// Rest of the cells (no click handlers)
-			row.createEl("td", { text: contact.age?.toString() || "N/A" });
+			row.createEl("td", { text: contact.age?.toString() ?? "N/A" });
 			row.createEl("td", {
 				text: contact.formattedBirthday || "N/A",
 			});
 			row.createEl("td", {
 				text:
 					contact.daysUntilBirthday !== null
-						? `${contact.daysUntilBirthday} days`
+						? pluralize(contact.daysUntilBirthday, "day")
 						: "N/A",
 			});
 			row.createEl("td", {
 				text: contact.relationship || "N/A",
 				cls: "friend-tracker-relationship-cell",
 			});
-			row.createEl("td", { text: contact.lastInteraction || "" });
+			row.createEl("td", {
+				text: this.contactOps.formatDaysAgo(contact.lastInteraction),
+			});
 
 			// Actions cell
 			const actionsCell = row.createEl("td", {
@@ -171,7 +174,7 @@ export class TableView {
 		if (contact.daysUntilBirthday !== null) {
 			if (contact.daysUntilBirthday === 0) {
 				// Birthday today - show cake
-				const indicator = cell.createEl("div", {
+				cell.createEl("div", {
 					cls: "table-birthday-indicator birthday-today",
 					text: "🎂",
 				});
@@ -192,69 +195,47 @@ export class TableView {
 	}
 
 	private sortContacts(contacts: ContactWithCountdown[], sort: SortConfig) {
+		const direction = sort.direction === "asc" ? 1 : -1;
+
 		return [...contacts].sort((a, b) => {
-			if (sort.column === "birthday") {
-				// Extract month and day from birthday strings
-				const dateA = new Date(a.birthday);
-				const dateB = new Date(b.birthday);
+			const aValue = this.getSortValue(a, sort.column);
+			const bValue = this.getSortValue(b, sort.column);
 
-				const aValue = (dateA.getMonth() + 1) * 100 + dateA.getDate();
-				const bValue = (dateB.getMonth() + 1) * 100 + dateB.getDate();
+			// Empty values always go last, regardless of direction
+			if (aValue === null && bValue === null) return 0;
+			if (aValue === null) return 1;
+			if (bValue === null) return -1;
 
-				return sort.direction === "asc"
-					? aValue - bValue
-					: bValue - aValue;
-			}
-
-			// Add special handling for daysUntilBirthday
-			if (sort.column === "daysUntilBirthday") {
-				// Handle null values
-				if (
-					a.daysUntilBirthday === null &&
-					b.daysUntilBirthday === null
-				)
-					return 0;
-				if (a.daysUntilBirthday === null) return 1;
-				if (b.daysUntilBirthday === null) return -1;
-
-				// Normal numeric comparison that respects sort direction
+			if (typeof aValue === "string" && typeof bValue === "string") {
 				return (
-					(a.daysUntilBirthday - b.daysUntilBirthday) *
-					(sort.direction === "asc" ? 1 : -1)
+					aValue.localeCompare(bValue, undefined, {
+						sensitivity: "base",
+						numeric: true,
+					}) * direction
 				);
 			}
-
-			const aValue = a[sort.column];
-			const bValue = b[sort.column];
-
-			// Handle null/empty values in sorting
-			if (!aValue && !bValue) return 0;
-			if (!aValue) return 1;
-			if (!bValue) return -1;
-
-			// Sort direction
-			const direction = sort.direction === "asc" ? 1 : -1;
-
-			// Handle different types of values
-			if (sort.column === "relationship" || sort.column === "name") {
-				// Case-insensitive string comparison for text columns
-				const aStr = String(aValue).toLowerCase();
-				const bStr = String(bValue).toLowerCase();
-				return aStr < bStr ? -direction : aStr > bStr ? direction : 0;
-			} else if (
-				typeof aValue === "number" &&
-				typeof bValue === "number"
-			) {
-				// Numeric comparison
-				return (aValue - bValue) * direction;
-			}
-
-			// Default string comparison
-			return aValue < bValue
-				? -direction
-				: aValue > bValue
-				? direction
-				: 0;
+			return ((aValue as number) - (bValue as number)) * direction;
 		});
+	}
+
+	private getSortValue(
+		contact: ContactWithCountdown,
+		column: SortColumn
+	): string | number | null {
+		switch (column) {
+			case "birthday": {
+				// Sort by month and day, ignoring the year
+				const date = parseLocalDate(contact.birthday);
+				return date ? (date.getMonth() + 1) * 100 + date.getDate() : null;
+			}
+			case "formattedBirthday":
+				return this.getSortValue(contact, "birthday");
+			case "age":
+			case "daysUntilBirthday":
+			case "lastInteraction":
+				return contact[column];
+			default:
+				return contact[column] || null;
+		}
 	}
 }
