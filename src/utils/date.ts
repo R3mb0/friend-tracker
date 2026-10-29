@@ -29,6 +29,46 @@ export function parseLocalDate(value: unknown): Date | null {
 	return date;
 }
 
+/** A birthday; `year` is null when only day and month are known */
+export interface BirthdayParts {
+	year: number | null;
+	/** 1-12 */
+	month: number;
+	day: number;
+}
+
+// Birthdays without a year are stored as "--MM-DD" (ISO 8601 style)
+const YEARLESS_BIRTHDAY = /^--(\d{1,2})-(\d{1,2})$/;
+
+/** Parse "YYYY-MM-DD" or "--MM-DD" (year unknown) */
+export function parseBirthday(value: unknown): BirthdayParts | null {
+	const date = parseLocalDate(value);
+	if (date) {
+		return {
+			year: date.getFullYear(),
+			month: date.getMonth() + 1,
+			day: date.getDate(),
+		};
+	}
+	if (typeof value !== "string") return null;
+
+	const match = value.trim().match(YEARLESS_BIRTHDAY);
+	if (!match) return null;
+	const month = Number(match[1]);
+	const day = Number(match[2]);
+	// Check against a leap year so that February 29 is allowed
+	const check = new Date(2000, month - 1, day);
+	if (check.getMonth() !== month - 1 || check.getDate() !== day) return null;
+	return { year: null, month, day };
+}
+
+export function formatYearlessBirthday(month: number, day: number): string {
+	return `--${String(month).padStart(2, "0")}-${String(day).padStart(
+		2,
+		"0"
+	)}`;
+}
+
 function makeLocalDate(year: number, month: number, day: number): Date {
 	const date = new Date(0);
 	date.setFullYear(year, month, day);

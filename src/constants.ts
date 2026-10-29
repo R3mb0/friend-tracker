@@ -9,9 +9,11 @@ export const STANDARD_FIELDS = {
 	ADDRESS: "address",
 	RELATIONSHIP: "relationship",
 	INTERACTIONS: "interactions",
+	DECEASED: "deceased",
 	CREATED: "created",
 	UPDATED: "updated",
 	NOTES: "notes",
+	NOTE_SECTIONS: "note_sections",
 	EXTRAS: "extras",
 } as const;
 
@@ -19,9 +21,11 @@ export const STANDARD_FIELDS = {
 export const SYSTEM_FIELDS: StandardFieldValue[] = [
 	STANDARD_FIELDS.NAME,
 	STANDARD_FIELDS.INTERACTIONS,
+	STANDARD_FIELDS.DECEASED,
 	STANDARD_FIELDS.CREATED,
 	STANDARD_FIELDS.UPDATED,
 	STANDARD_FIELDS.NOTES,
+	STANDARD_FIELDS.NOTE_SECTIONS,
 	STANDARD_FIELDS.EXTRAS,
 ];
 

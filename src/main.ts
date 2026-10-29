@@ -39,32 +39,9 @@ export default class FriendTracker extends Plugin {
 			);
 
 			// Add ribbon icon
-			this.addRibbonIcon("user", "Open friend tracker", async () => {
-				const workspace = this.app.workspace;
-				const leaves = workspace.getLeavesOfType(
-					VIEW_TYPE_FRIEND_TRACKER
-				);
-
-				// Check for existing view, handling deferred views
-				for (const leaf of leaves) {
-					const view = await leaf.view;
-					if (view instanceof FriendTrackerView) {
-						workspace.revealLeaf(leaf);
-						return;
-					}
-				}
-
-				const leaf = workspace.getRightLeaf(false);
-				if (leaf) {
-					await leaf.setViewState({
-						type: VIEW_TYPE_FRIEND_TRACKER,
-						active: true,
-					});
-					workspace.revealLeaf(leaf);
-				} else {
-					new Notice("Could not create Friend Tracker view");
-				}
-			});
+			this.addRibbonIcon("user", "Open friend tracker", () =>
+				this.activateView()
+			);
 
 			// Add settings tab
 			this.addSettingTab(new FriendTrackerSettingTab(this.app, this));
@@ -74,6 +51,29 @@ export default class FriendTracker extends Plugin {
 		} catch (error) {
 			console.error("Friend Tracker failed to load:", error);
 			new Notice("Friend Tracker failed to load: " + error.message);
+		}
+	}
+
+	/** Reveal the Friend Tracker overview, opening it in the right sidebar */
+	async activateView() {
+		const workspace = this.app.workspace;
+
+		// Reuse an existing view (it may still be deferred, i.e. not loaded)
+		const existing = workspace.getLeavesOfType(VIEW_TYPE_FRIEND_TRACKER);
+		if (existing.length > 0) {
+			workspace.revealLeaf(existing[0]);
+			return;
+		}
+
+		const leaf = workspace.getRightLeaf(false);
+		if (leaf) {
+			await leaf.setViewState({
+				type: VIEW_TYPE_FRIEND_TRACKER,
+				active: true,
+			});
+			workspace.revealLeaf(leaf);
+		} else {
+			new Notice("Could not create Friend Tracker view");
 		}
 	}
 

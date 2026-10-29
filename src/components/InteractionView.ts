@@ -1,7 +1,14 @@
 import { setIcon } from "obsidian";
 import type { ContactPageView } from "@/views/ContactPageView";
 import type { Interaction } from "@/types";
-import { parseLocalDate } from "@/utils/date";
+import { daysBetween, getToday, parseLocalDate } from "@/utils/date";
+
+// Longer lists get month headings
+const GROUP_BY_MONTH_FROM = 8;
+const MONTH_FORMAT: Intl.DateTimeFormatOptions = {
+	month: "long",
+	year: "numeric",
+};
 
 export class InteractionView {
 	constructor(private view: ContactPageView) {}
@@ -19,7 +26,23 @@ export class InteractionView {
 					getTime(b.interaction.date) - getTime(a.interaction.date)
 			);
 
+		const groupByMonth = sortedInteractions.length >= GROUP_BY_MONTH_FROM;
+		let currentGroup = "";
+
 		sortedInteractions.forEach(({ interaction, index }) => {
+			if (groupByMonth) {
+				const date = parseLocalDate(interaction.date);
+				const group = date
+					? date.toLocaleDateString(undefined, MONTH_FORMAT)
+					: "No date";
+				if (group !== currentGroup) {
+					currentGroup = group;
+					interactionsList.createDiv({
+						cls: "contact-interaction-group",
+						text: group,
+					});
+				}
+			}
 			this.createInteractionItem(interactionsList, interaction, index);
 		});
 	}
@@ -43,11 +66,19 @@ export class InteractionView {
 			? date.toLocaleDateString(undefined, dateFormat)
 			: String(interaction.date ?? "");
 
-		// Date
-		interactionEl.createEl("div", {
+		// Date with relative time below it
+		const dateEl = interactionEl.createEl("div", {
 			cls: "contact-interaction-date",
-			text: formattedDate,
 		});
+		dateEl.createDiv({ text: formattedDate });
+		if (date) {
+			dateEl.createDiv({
+				cls: "contact-interaction-relative",
+				text: this.view.plugin.contactOperations.formatDaysAgo(
+					daysBetween(date, getToday())
+				),
+			});
+		}
 
 		// Text
 		interactionEl.createEl("div", {
@@ -70,7 +101,7 @@ export class InteractionView {
 			this.view.openEditInteractionModal(index, interaction);
 		});
 
-		// Delete button
+		// Delete button (can be undone from the notice)
 		const deleteBtn = actions.createEl("button", {
 			cls: "friend-tracker-button button-icon button-danger",
 			attr: { "aria-label": "Delete interaction" },

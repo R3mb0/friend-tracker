@@ -9,7 +9,9 @@ export class InteractionModal extends Modal {
 	constructor(
 		app: App,
 		interaction: Interaction | null,
-		onSubmit: (date: string, text: string) => void
+		onSubmit: (date: string, text: string) => void,
+		/** Shown in the title when opened outside the contact page */
+		private contactName?: string
 	) {
 		super(app);
 		this.interaction = interaction;
@@ -20,8 +22,9 @@ export class InteractionModal extends Modal {
 		const { contentEl } = this;
 		contentEl.empty();
 
+		const title = this.interaction ? "Edit interaction" : "Add interaction";
 		contentEl.createEl("h2", {
-			text: this.interaction ? "Edit interaction" : "Add interaction",
+			text: this.contactName ? `${title} with ${this.contactName}` : title,
 		});
 
 		const form = contentEl.createEl("form");

@@ -2,7 +2,32 @@ import { TFile } from "obsidian";
 import type FriendTracker from "@/main";
 import type { ContactWithCountdown, Interaction } from "@/types";
 import { splitFrontmatter } from "@/utils/frontmatter";
-import { daysBetween, getToday, parseLocalDate, pluralize } from "@/utils/date";
+import {
+	daysBetween,
+	getToday,
+	parseBirthday,
+	parseLocalDate,
+	pluralize,
+	toLocalISODate,
+} from "@/utils/date";
+
+/**
+ * The "deceased" field holds the date of death, or `true` when the date
+ * is unknown. Anything else (missing, false, empty) means alive.
+ */
+export function parseDeceased(value: unknown): {
+	deceased: boolean;
+	date: Date | null;
+} {
+	if (value === true) return { deceased: true, date: null };
+	const date = parseLocalDate(value);
+	if (date) return { deceased: true, date };
+	// Non-empty text that isn't a date still marks the person as deceased
+	if (typeof value === "string" && value.trim() && value !== "false") {
+		return { deceased: true, date: null };
+	}
+	return { deceased: false, date: null };
+}
 
 export class ContactOperations {
 	constructor(private plugin: FriendTracker) {}
@@ -30,6 +55,13 @@ export class ContactOperations {
 						typeof metadata.birthday === "string"
 							? metadata.birthday
 							: "";
+					const death = parseDeceased(metadata.deceased);
+					// Age at death; unknown if the date of death is unknown
+					const age = death.deceased
+						? death.date
+							? this.calculateAge(birthday, death.date)
+							: null
+						: this.calculateAge(birthday);
 
 					contacts.push({
 						name:
@@ -42,12 +74,16 @@ export class ContactOperations {
 							typeof metadata.relationship === "string"
 								? metadata.relationship
 								: "",
-						age: this.calculateAge(birthday),
-						daysUntilBirthday:
-							this.calculateDaysUntilBirthday(birthday),
+						age,
+						// No birthday countdown or reminders for the deceased
+						daysUntilBirthday: death.deceased
+							? null
+							: this.calculateDaysUntilBirthday(birthday),
 						lastInteraction: this.calculateDaysSinceLastInteraction(
 							metadata.interactions
 						),
+						deceased: death.deceased,
+						deathDate: death.date ? toLocalISODate(death.date) : "",
 						file,
 					});
 				}
@@ -62,11 +98,12 @@ export class ContactOperations {
 		return contacts;
 	}
 
-	private calculateAge(birthday: string): number | null {
+	/** Age today, or at `until` (e.g. the date of death) */
+	public calculateAge(birthday: string, until = getToday()): number | null {
 		const birthDate = parseLocalDate(birthday);
 		if (!birthDate) return null;
 
-		const today = getToday();
+		const today = until;
 		let age = today.getFullYear() - birthDate.getFullYear();
 		const monthDiff = today.getMonth() - birthDate.getMonth();
 
@@ -121,28 +158,33 @@ export class ContactOperations {
 		return parts.join(", ") + " old";
 	}
 
+	/** Format a date or birthday; birthdays without a year show day/month */
 	public formatBirthday(dateStr: string, withYear = false): string {
-		const birthDate = parseLocalDate(dateStr);
-		if (!birthDate) return dateStr || "";
+		const parts = parseBirthday(dateStr);
+		if (!parts) return dateStr || "";
 
-		return birthDate.toLocaleDateString(undefined, {
+		// Any leap year works for showing day and month only
+		const date = new Date(parts.year ?? 2000, parts.month - 1, parts.day);
+		return date.toLocaleDateString(undefined, {
 			month: "long",
 			day: "numeric",
-			...(withYear && { year: "numeric" }),
+			...(withYear && parts.year !== null && { year: "numeric" }),
 		});
 	}
 
+	/** Also works for birthdays without a year */
 	public calculateDaysUntilBirthday(birthday: string): number | null {
-		const birthDate = parseLocalDate(birthday);
-		if (!birthDate) return null;
+		const parts = parseBirthday(birthday);
+		if (!parts) return null;
 
 		const today = getToday();
 
 		// Create this year's birthday at local midnight
+		// (February 29 rolls over to March 1 in non-leap years)
 		const nextBirthday = new Date(
 			today.getFullYear(),
-			birthDate.getMonth(),
-			birthDate.getDate()
+			parts.month - 1,
+			parts.day
 		);
 
 		// If this year's birthday has already passed, use next year's birthday
@@ -153,7 +195,26 @@ export class ContactOperations {
 		return daysBetween(today, nextBirthday);
 	}
 
-	private calculateDaysSinceLastInteraction(
+	/** Add an interaction to a contact file (newest first, like the profile) */
+	public async addInteraction(file: TFile, interaction: Interaction) {
+		await this.plugin.app.fileManager.processFrontMatter(
+			file,
+			(frontmatter) => {
+				const list: Interaction[] = Array.isArray(
+					frontmatter.interactions
+				)
+					? frontmatter.interactions
+					: [];
+				list.push(interaction);
+				const getTime = (item: Interaction) =>
+					parseLocalDate(item?.date)?.getTime() ?? 0;
+				list.sort((a, b) => getTime(b) - getTime(a));
+				frontmatter.interactions = list;
+			}
+		);
+	}
+
+	public calculateDaysSinceLastInteraction(
 		interactions: unknown
 	): number | null {
 		if (!Array.isArray(interactions)) return null;

@@ -7,7 +7,7 @@ import {
 	normalizePath,
 } from "obsidian";
 import type FriendTracker from "@/main";
-import type { ContactWithCountdown } from "@/types";
+import type { SortColumn } from "@/types";
 
 class FolderSuggest extends AbstractInputSuggest<string> {
 	inputEl: HTMLInputElement;
@@ -48,7 +48,7 @@ export class FriendTrackerSettingTab extends PluginSettingTab {
 		containerEl.empty();
 
 		const sortColumns: Array<{
-			value: keyof Omit<ContactWithCountdown, "file">;
+			value: SortColumn;
 			label: string;
 		}> = [
 			{ value: "name", label: "Name" },
@@ -85,7 +85,7 @@ export class FriendTrackerSettingTab extends PluginSettingTab {
 					.setValue(this.plugin.settings.defaultSortColumn)
 					.onChange(async (value) => {
 						this.plugin.settings.defaultSortColumn =
-							value as keyof Omit<ContactWithCountdown, "file">;
+							value as SortColumn;
 						await this.plugin.saveSettings();
 					});
 			})

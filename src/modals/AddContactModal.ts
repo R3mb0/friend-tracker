@@ -1,6 +1,7 @@
 import { App, Modal, Notice, stringifyYaml } from "obsidian";
 import type FriendTracker from "@/main";
 import { createRelationshipInput } from "@/components/ContactFields";
+import { createBirthdayInput } from "@/components/BirthdayInput";
 import { getContactFilePath, sanitizeFileName } from "@/utils/file";
 
 export class AddContactModal extends Modal {
@@ -36,14 +37,8 @@ export class AddContactModal extends Modal {
 			cls: "friend-tracker-modal-field",
 		});
 		birthdayField.createEl("label", { text: "Birthday" });
-		const birthdayInput = birthdayField.createEl("input", {
-			attr: {
-				type: "date",
-				name: "birthday",
-				placeholder: "YYYY-MM-DD",
-				pattern: "\\d{4}-\\d{2}-\\d{2}",
-			},
-			cls: "friend-tracker-modal-input",
+		const birthdayInput = createBirthdayInput(birthdayField, "", {
+			inputCls: "friend-tracker-modal-input",
 		});
 
 		// Email field
@@ -97,7 +92,8 @@ export class AddContactModal extends Modal {
 				name: nameInput.value.trim(),
 			};
 
-			if (birthdayInput.value) data.birthday = birthdayInput.value;
+			const birthday = birthdayInput.getValue();
+			if (birthday) data.birthday = birthday;
 			if (emailInput.value) data.email = emailInput.value;
 			if (phoneInput.value) data.phone = phoneInput.value;
 			if (relationshipInput.value) {

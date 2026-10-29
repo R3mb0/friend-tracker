@@ -2,7 +2,12 @@ import { DropdownComponent, SearchComponent, setIcon } from "obsidian";
 import type { FriendTrackerView } from "./index";
 import type { ContactWithCountdown, SortConfig } from "@/types";
 import type { ContactOperations } from "@/services/ContactOperations";
-import { parseLocalDate, pluralize } from "@/utils/date";
+import { parseBirthday, pluralize } from "@/utils/date";
+import {
+	createRelationshipTag,
+	formatCountdown,
+	getContactStatus,
+} from "@/utils/display";
 
 type SortColumn = SortConfig["column"];
 
@@ -236,18 +241,16 @@ export class TableView {
 		const nextBirthday = this.findMin(contacts, (c) => c.daysUntilBirthday);
 		if (nextBirthday && nextBirthday.daysUntilBirthday !== null) {
 			const days = nextBirthday.daysUntilBirthday;
-			const when =
-				days === 0
-					? "today"
-					: days === 1
-					? "tomorrow"
-					: `in ${pluralize(days, "day")}`;
-			addStat("cake", `${nextBirthday.name} ${when}`, days <= 7);
+			addStat(
+				"cake",
+				`${nextBirthday.name} ${formatCountdown(days)}`,
+				days <= 7
+			);
 		}
 
 		// Contact you haven't been in touch with for the longest time
 		const longestAgo = this.findMin(contacts, (c) =>
-			c.lastInteraction === null ? null : -c.lastInteraction
+			c.lastInteraction === null || c.deceased ? null : -c.lastInteraction
 		);
 		if (longestAgo && longestAgo.lastInteraction !== null) {
 			addStat(
@@ -279,57 +282,52 @@ export class TableView {
 	}
 
 	private renderTableHeader(table: HTMLTableElement, sort: SortConfig) {
-		const headerRow = table.createEl("tr") as HTMLTableRowElement;
+		const headerRow = table.createEl("thead").createEl("tr");
 		const columns: Array<{
-			key: keyof Omit<ContactWithCountdown, "file"> | "actions";
+			key: SortColumn | "actions";
 			label: string;
-			sortable?: boolean;
+			cls?: string;
 		}> = [
-			{ key: "name", label: "Name", sortable: true },
-			{ key: "age", label: "Age", sortable: true },
-			{ key: "birthday", label: "Birthday", sortable: true },
-			{ key: "daysUntilBirthday", label: "Days left", sortable: true },
-			{ key: "relationship", label: "Type", sortable: true },
+			{ key: "name", label: "Name", cls: "friend-tracker-col-name" },
 			{
-				key: "lastInteraction",
-				label: "Last interaction",
-				sortable: true,
+				key: "age",
+				label: "Age",
+				cls: "friend-tracker-col-age is-numeric",
 			},
-			{ key: "actions", label: "", sortable: false },
+			// Shows the date and the countdown; sorts by days left
+			{ key: "daysUntilBirthday", label: "Birthday" },
+			{
+				key: "relationship",
+				label: "Type",
+				cls: "friend-tracker-col-type",
+			},
+			{ key: "lastInteraction", label: "Last interaction" },
+			{ key: "actions", label: "", cls: "friend-tracker-col-actions" },
 		];
 
-		columns.forEach(({ key, label, sortable }) => {
-			const th = headerRow.createEl("th");
+		columns.forEach(({ key, label, cls }) => {
+			const th = headerRow.createEl("th", { cls });
+			if (key === "actions") return;
 
-			if (sortable) {
-				const button = th.createEl("button", {
-					cls: "friend-tracker-sort-button",
-				});
-
-				// Add text span
-				button.createEl("span", { text: label });
-
-				// Add sort indicator span
-				button.createEl("span", {
-					cls: "sort-indicator",
-					text:
-						sort.column === key
-							? sort.direction === "asc"
-								? "↑"
-								: "↓"
-							: "",
-				});
-
-				button.addEventListener("click", () => {
-					if (key !== "actions") {
-						this.view.handleSort(
-							key as keyof Omit<ContactWithCountdown, "file">
-						);
-					}
-				});
-			} else {
-				th.setText(label);
+			const isActive = sort.column === key;
+			if (isActive) {
+				th.setAttr(
+					"aria-sort",
+					sort.direction === "asc" ? "ascending" : "descending"
+				);
 			}
+
+			const button = th.createEl("button", {
+				cls: `friend-tracker-sort-button${
+					isActive ? " is-active" : ""
+				}`,
+			});
+			button.createSpan({ text: label });
+			button.createSpan({
+				cls: "sort-indicator",
+				text: isActive ? (sort.direction === "asc" ? "↑" : "↓") : "↕",
+			});
+			button.addEventListener("click", () => this.view.handleSort(key));
 		});
 	}
 
@@ -337,8 +335,18 @@ export class TableView {
 		table: HTMLTableElement,
 		contacts: ContactWithCountdown[]
 	) {
+		const body = table.createEl("tbody");
+
 		contacts.forEach((contact) => {
-			const row = table.createEl("tr") as HTMLTableRowElement;
+			const days = contact.daysUntilBirthday;
+			const row = body.createEl("tr", {
+				cls: "friend-tracker-row",
+				attr: { tabindex: "0" },
+			});
+			if (contact.deceased) row.addClass("is-deceased");
+			if (days === 0) row.addClass("is-birthday-today");
+			else if (days !== null && days <= 7) row.addClass("is-birthday-soon");
+
 			this.rows.push({
 				row,
 				searchText: normalizeForSearch(
@@ -347,77 +355,149 @@ export class TableView {
 				relationship: contact.relationship.trim().toLowerCase(),
 			});
 
-			// Create name cell with click handler
-			const nameCell = this.renderNameCell(contact);
-			row.appendChild(nameCell); // Add the name cell to the row
-			nameCell.addEventListener("click", (e) => {
-				e.stopPropagation(); // Stop event from bubbling
-				this.view.openContact(contact.file);
+			// The whole row opens the contact
+			row.addEventListener("click", () =>
+				this.view.openContact(contact.file)
+			);
+			row.addEventListener("keydown", (e) => {
+				if (e.key === "Enter" && e.target === row) {
+					e.preventDefault();
+					this.view.openContact(contact.file);
+				}
 			});
 
-			// Rest of the cells (no click handlers)
-			row.createEl("td", { text: contact.age?.toString() ?? "N/A" });
-			row.createEl("td", {
-				text: contact.formattedBirthday || "N/A",
+			this.renderNameCell(row, contact);
+
+			const ageCell = row.createEl("td", {
+				cls: "friend-tracker-col-age is-numeric",
 			});
-			row.createEl("td", {
-				text:
-					contact.daysUntilBirthday !== null
-						? pluralize(contact.daysUntilBirthday, "day")
-						: "N/A",
+			this.setCellValue(ageCell, contact.age?.toString() ?? null);
+
+			this.renderBirthdayCell(row, contact);
+
+			const typeCell = row.createEl("td", {
+				cls: "friend-tracker-col-type",
 			});
-			row.createEl("td", {
-				text: contact.relationship || "N/A",
-				cls: "friend-tracker-relationship-cell",
-			});
-			row.createEl("td", {
-				text: this.contactOps.formatDaysAgo(contact.lastInteraction),
-			});
+			if (contact.relationship) {
+				createRelationshipTag(typeCell, contact.relationship);
+			} else {
+				this.setCellValue(typeCell, null);
+			}
+
+			this.renderLastInteractionCell(row, contact);
 
 			// Actions cell
 			const actionsCell = row.createEl("td", {
-				cls: "friend-tracker-actions",
+				cls: "friend-tracker-actions friend-tracker-col-actions",
+			});
+			const actions = actionsCell.createDiv({
+				cls: "friend-tracker-row-actions",
 			});
 
-			// Delete button
-			const deleteButton = actionsCell.createEl("button", {
-				cls: "friend-tracker-delete-button",
+			// Log an interaction without opening the contact
+			const addButton = actions.createEl("button", {
+				cls: "friend-tracker-row-button",
+				attr: { "aria-label": "Add interaction" },
+			});
+			setIcon(addButton, "calendar-plus");
+			addButton.addEventListener("click", (e) => {
+				e.stopPropagation();
+				this.view.openAddInteractionModal(contact);
+			});
+			addButton.addEventListener("keydown", (e) => e.stopPropagation());
+
+			const deleteButton = actions.createEl("button", {
+				cls: "friend-tracker-row-button friend-tracker-delete-button",
 				attr: { "aria-label": "Remove contact" },
 			});
 			setIcon(deleteButton, "trash");
-
 			deleteButton.addEventListener("click", (e) => {
 				e.stopPropagation();
 				this.view.openDeleteModal(contact.file);
 			});
+			// Don't let Enter on the button also open the contact
+			deleteButton.addEventListener("keydown", (e) => e.stopPropagation());
 		});
 	}
 
-	private renderNameCell(contact: ContactWithCountdown): HTMLElement {
-		const cell = document.createElement("td");
-		cell.className = "friend-tracker-name-cell";
+	/** Fill a cell with text, or a muted dash when the value is missing */
+	private setCellValue(cell: HTMLElement, value: string | null) {
+		if (value) {
+			cell.setText(value);
+		} else {
+			cell.createSpan({ cls: "friend-tracker-empty-value", text: "–" });
+		}
+	}
 
-		if (contact.daysUntilBirthday !== null) {
-			if (contact.daysUntilBirthday === 0) {
-				// Birthday today - show cake
-				cell.createEl("div", {
-					cls: "table-birthday-indicator birthday-today",
-					text: "🎂",
-				});
-			} else if (contact.daysUntilBirthday <= 7) {
-				// Within a week - show green dot
-				const dotContainer = cell.createEl("div", {
-					cls: "table-birthday-status-dot",
-				});
-				dotContainer.createEl("div", {
-					cls: "table-birthday-status-dot-inner",
-				});
-			}
+	private renderNameCell(
+		row: HTMLTableRowElement,
+		contact: ContactWithCountdown
+	) {
+		const cell = row.createEl("td", {
+			cls: "friend-tracker-name-cell friend-tracker-col-name",
+		});
+		const inner = cell.createDiv({ cls: "friend-tracker-name" });
+		const days = contact.daysUntilBirthday;
+
+		if (days === 0) {
+			inner.createSpan({
+				cls: "friend-tracker-birthday-marker is-today",
+				text: "🎂",
+				attr: { "aria-label": "Birthday today" },
+			});
+		} else if (days !== null && days <= 7) {
+			inner.createSpan({
+				cls: "friend-tracker-birthday-marker is-soon",
+				attr: { "aria-label": "Birthday within a week" },
+			});
 		}
 
-		cell.createSpan({ text: contact.name });
+		inner.createSpan({ text: contact.name });
+		if (contact.deceased) {
+			inner.createSpan({
+				cls: "friend-tracker-deceased-mark",
+				text: "†",
+				attr: { "aria-label": "Deceased" },
+			});
+		}
+	}
 
-		return cell;
+	private renderBirthdayCell(
+		row: HTMLTableRowElement,
+		contact: ContactWithCountdown
+	) {
+		const cell = row.createEl("td");
+		const days = contact.daysUntilBirthday;
+		if (!contact.formattedBirthday || days === null) {
+			this.setCellValue(cell, contact.formattedBirthday || null);
+			return;
+		}
+
+		cell.createSpan({ text: contact.formattedBirthday });
+		cell.createSpan({
+			cls: "friend-tracker-countdown",
+			text: ` · ${formatCountdown(days)}`,
+		});
+	}
+
+	private renderLastInteractionCell(
+		row: HTMLTableRowElement,
+		contact: ContactWithCountdown
+	) {
+		const cell = row.createEl("td");
+		const days = contact.lastInteraction;
+		if (days === null) {
+			this.setCellValue(cell, null);
+			return;
+		}
+
+		// Color by how long ago the last contact was (not for the deceased)
+		const status = contact.deceased ? "" : getContactStatus(days);
+		const value = cell.createSpan({
+			cls: `friend-tracker-last-interaction ${status}`,
+		});
+		value.createSpan({ cls: "friend-tracker-status-dot" });
+		value.createSpan({ text: this.contactOps.formatDaysAgo(days) });
 	}
 
 	private sortContacts(contacts: ContactWithCountdown[], sort: SortConfig) {
@@ -451,8 +531,8 @@ export class TableView {
 		switch (column) {
 			case "birthday": {
 				// Sort by month and day, ignoring the year
-				const date = parseLocalDate(contact.birthday);
-				return date ? (date.getMonth() + 1) * 100 + date.getDate() : null;
+				const parts = parseBirthday(contact.birthday);
+				return parts ? parts.month * 100 + parts.day : null;
 			}
 			case "formattedBirthday":
 				return this.getSortValue(contact, "birthday");

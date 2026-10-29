@@ -4,14 +4,20 @@ import {
 	TAbstractFile,
 	TFile,
 	Platform,
+	Notice,
 	debounce,
 } from "obsidian";
 import type FriendTracker from "@/main";
 import { TableView } from "./TableView";
 import { VIEW_TYPE_CONTACT_PAGE } from "@/views/ContactPageView";
-import type { SortConfig, ContactWithCountdown } from "@/types";
+import type {
+	SortConfig,
+	SortColumn,
+	ContactWithCountdown,
+} from "@/types";
 import { AddContactModal } from "@/modals/AddContactModal";
 import { DeleteContactModal } from "@/modals/DeleteContactModal";
+import { InteractionModal } from "@/modals/InteractionModal";
 
 export const VIEW_TYPE_FRIEND_TRACKER = "friend-tracker-view";
 
@@ -39,7 +45,7 @@ export class FriendTrackerView extends ItemView {
 		modal.open();
 	}
 
-	public handleSort(column: keyof Omit<ContactWithCountdown, "file">) {
+	public handleSort(column: SortColumn) {
 		if (this.currentSort.column === column) {
 			this.currentSort.direction =
 				this.currentSort.direction === "asc" ? "desc" : "asc";
@@ -68,6 +74,28 @@ export class FriendTrackerView extends ItemView {
 		if (Platform.isMobile) {
 			this.app.workspace.rightSplit.collapse();
 		}
+	}
+
+	/** Log an interaction without opening the contact page */
+	public openAddInteractionModal(contact: ContactWithCountdown) {
+		new InteractionModal(
+			this.app,
+			null,
+			async (date, text) => {
+				try {
+					await this.plugin.contactOperations.addInteraction(
+						contact.file,
+						{ date, text }
+					);
+					// The table refreshes itself on the file change
+					new Notice(`Interaction with ${contact.name} added`);
+				} catch (error) {
+					console.error("Error adding interaction:", error);
+					new Notice(`Could not add interaction: ${error}`);
+				}
+			},
+			contact.name
+		).open();
 	}
 
 	public async openDeleteModal(file: TFile) {

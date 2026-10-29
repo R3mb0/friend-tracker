@@ -146,26 +146,6 @@ If your plugin does not need CSS, delete this file.
 	color: var(--text-muted);
 }
 
-.friend-tracker-view table {
-	border-collapse: collapse;
-	width: 100%;
-	margin: 0;
-}
-
-.friend-tracker-view tr {
-	cursor: default;
-}
-
-.friend-tracker-view tr:hover {
-	background-color: var(--background-modifier-hover);
-}
-
-.friend-tracker-view th,
-.friend-tracker-view td {
-	padding: 8px 12px;
-	text-align: left;
-}
-
 .friend-tracker-sort-button {
 	background: transparent !important;
 	border: none;
@@ -195,12 +175,20 @@ If your plugin does not need CSS, delete this file.
 .friend-tracker-sort-button:focus {
 	background: transparent !important;
 	box-shadow: none !important;
-	outline: none !important;
+	outline: none;
 }
 
+/* Visible focus ring for keyboard users only */
+.friend-tracker-sort-button:focus-visible {
+	outline: 2px solid var(--interactive-accent);
+	outline-offset: 2px;
+	border-radius: var(--radius-s);
+}
+
+/* Inactive columns show a faint ↕ so it's clear they can be sorted */
 .friend-tracker-sort-button .sort-indicator {
 	font-size: 0.8em;
-	opacity: 0.5;
+	opacity: 0.35;
 	margin-left: 0;
 }
 
@@ -208,22 +196,34 @@ If your plugin does not need CSS, delete this file.
 	opacity: 0.8;
 }
 
-.friend-tracker-sort-button:active {
-	box-shadow: none;
-	background: none;
-}
-
-.friend-tracker-sort-button:focus {
-	box-shadow: none;
-}
-
-.friend-tracker-sort-button:focus-visible {
-	outline: none;
+.friend-tracker-sort-button.is-active,
+.friend-tracker-sort-button.is-active .sort-indicator {
+	color: var(--text-accent);
+	opacity: 1;
 }
 
 .friend-tracker-actions {
 	text-align: right;
 	padding-right: 16px;
+}
+
+/* Row buttons (add interaction, delete) only appear for the hovered or
+   focused row */
+.friend-tracker-row .friend-tracker-row-button {
+	opacity: 0;
+	transition: opacity 0.15s ease;
+}
+
+.friend-tracker-row:hover .friend-tracker-row-button,
+.friend-tracker-row:focus-within .friend-tracker-row-button {
+	opacity: 1;
+}
+
+/* Touch devices have no hover: keep it visible there */
+@media (hover: none) {
+	.friend-tracker-row .friend-tracker-row-button {
+		opacity: 1;
+	}
 }
 
 .friend-tracker-delete-button {
@@ -561,7 +561,7 @@ If your plugin does not need CSS, delete this file.
 	gap: 8px;
 }
 
-.contact-name-display h1 {
+.contact-name-row h1 {
 	white-space: nowrap;
 	overflow: hidden;
 	text-overflow: ellipsis;
@@ -569,7 +569,7 @@ If your plugin does not need CSS, delete this file.
 	line-height: 1.2;
 }
 
-.contact-name-display h1.editing {
+.contact-name-row h1.editing {
 	display: none;
 }
 
@@ -671,26 +671,26 @@ If your plugin does not need CSS, delete this file.
 	height: 0 !important;
 }
 
-.friend-tracker-name-cell {
-	cursor: pointer;
-	position: relative;
+.friend-tracker-name {
+	display: flex;
+	align-items: center;
+	gap: var(--size-4-2);
+	font-weight: var(--font-medium);
 }
 
-.table-birthday-status-dot {
-	position: absolute;
-	left: -10px;
-	top: 50%;
-	transform: translateY(-50%);
-	padding: 2px;
-	border-radius: 9999px;
-	background-color: rgba(var(--color-green-rgb), 0.1);
-}
-
-.table-birthday-status-dot-inner {
-	width: 6px;
-	height: 6px;
-	border-radius: 9999px;
+/* Birthday marker before the name: dot within a week, cake on the day */
+.friend-tracker-birthday-marker.is-soon {
+	flex-shrink: 0;
+	width: 8px;
+	height: 8px;
+	border-radius: 50%;
 	background-color: var(--color-green);
+	box-shadow: 0 0 0 3px rgba(var(--color-green-rgb), 0.2);
+}
+
+.friend-tracker-birthday-marker.is-today {
+	font-size: 14px;
+	line-height: 1;
 }
 
 /* Modal Styles */
@@ -740,15 +740,6 @@ If your plugin does not need CSS, delete this file.
 	margin-top: 16px;
 }
 
-.friend-tracker-view {
-	display: flex;
-	flex-direction: column;
-	width: 100%;
-	height: 100vh;
-	height: -webkit-fill-available;
-	min-height: -webkit-fill-available;
-}
-
 /* Let the header span the full view width; spacing moves to the content.
    Only .friend-tracker-content scrolls, so header and table head stay put. */
 .workspace-leaf-content[data-type="friend-tracker-view"] > .view-content {
@@ -763,10 +754,12 @@ If your plugin does not need CSS, delete this file.
 }
 
 .friend-tracker-content {
-	/* Gap above as margin, not padding: it lies outside the scroll area,
-	   so rows can't show through between header and sticky table head */
-	margin-top: var(--size-4-3);
-	padding: 0 var(--size-4-3) var(--size-4-8);
+	/* Spacing as margin, not padding: it lies outside the scroll area, so
+	   rows can't show through next to the sticky table head and name column */
+	margin: var(--size-4-3) var(--size-4-3) 0;
+	padding: 0 0 var(--size-4-8);
+	/* Lets the table hide columns based on the available width */
+	container-type: inline-size;
 	flex: 1;
 	display: flex;
 	flex-direction: column;
@@ -777,11 +770,152 @@ If your plugin does not need CSS, delete this file.
 
 /* Table styles */
 .friend-tracker-table {
+	--friend-tracker-row-bg: var(--background-primary);
 	width: 100%;
-	min-width: 600px;
 	border-collapse: collapse;
 	margin: 0;
 	table-layout: auto;
+}
+
+/* Rows: whole row is clickable. Backgrounds sit on the cells and are
+   opaque, so the sticky name column covers what scrolls beneath it. */
+.friend-tracker-row {
+	cursor: pointer;
+}
+
+.friend-tracker-row > td {
+	background-color: var(--friend-tracker-row-bg);
+	border-bottom: 1px solid var(--background-modifier-border);
+}
+
+.friend-tracker-row.is-birthday-soon {
+	--friend-tracker-row-bg: color-mix(
+		in srgb,
+		var(--color-green) 7%,
+		var(--background-primary)
+	);
+}
+
+.friend-tracker-row.is-birthday-today {
+	--friend-tracker-row-bg: color-mix(
+		in srgb,
+		var(--color-green) 16%,
+		var(--background-primary)
+	);
+}
+
+.friend-tracker-row:hover > td {
+	background-color: color-mix(
+		in srgb,
+		var(--text-normal) 6%,
+		var(--friend-tracker-row-bg)
+	);
+}
+
+.friend-tracker-row:focus {
+	outline: none;
+}
+
+.friend-tracker-row:focus-visible > td {
+	box-shadow: inset 0 2px 0 var(--interactive-accent),
+		inset 0 -2px 0 var(--interactive-accent);
+}
+
+/* Name column stays visible when scrolling sideways */
+.friend-tracker-table .friend-tracker-col-name {
+	position: sticky;
+	left: 0;
+	z-index: 1;
+}
+
+.friend-tracker-table th.friend-tracker-col-name {
+	z-index: 3;
+}
+
+/* No vertical lines between columns (also overrides theme table borders) */
+.friend-tracker-table th,
+.friend-tracker-table td {
+	border-left: none;
+	border-right: none;
+}
+
+/* Numbers with equal-width digits. Left-aligned like the other columns:
+   right-aligned, the age sat right next to the birthday column. */
+.friend-tracker-table .is-numeric {
+	font-variant-numeric: tabular-nums;
+}
+
+.friend-tracker-empty-value {
+	color: var(--text-faint);
+}
+
+.friend-tracker-countdown {
+	color: var(--text-muted);
+}
+
+/* Relationship tags, one stable color per type */
+.friend-tracker-tag {
+	--friend-tracker-tag-rgb: var(--mono-rgb-100);
+	display: inline-block;
+	padding: 1px var(--size-4-2);
+	border-radius: var(--radius-l);
+	font-size: var(--font-ui-smaller);
+	text-transform: capitalize;
+	color: rgb(var(--friend-tracker-tag-rgb));
+	background-color: rgba(var(--friend-tracker-tag-rgb), 0.15);
+}
+
+.friend-tracker-tag.is-red { --friend-tracker-tag-rgb: var(--color-red-rgb); }
+.friend-tracker-tag.is-orange { --friend-tracker-tag-rgb: var(--color-orange-rgb); }
+.friend-tracker-tag.is-yellow { --friend-tracker-tag-rgb: var(--color-yellow-rgb); }
+.friend-tracker-tag.is-green { --friend-tracker-tag-rgb: var(--color-green-rgb); }
+.friend-tracker-tag.is-cyan { --friend-tracker-tag-rgb: var(--color-cyan-rgb); }
+.friend-tracker-tag.is-blue { --friend-tracker-tag-rgb: var(--color-blue-rgb); }
+.friend-tracker-tag.is-purple { --friend-tracker-tag-rgb: var(--color-purple-rgb); }
+.friend-tracker-tag.is-pink { --friend-tracker-tag-rgb: var(--color-pink-rgb); }
+
+/* Last interaction: green < 30 days, yellow < 90 days, red after that */
+.friend-tracker-last-interaction {
+	display: inline-flex;
+	align-items: center;
+	gap: var(--size-4-2);
+}
+
+.friend-tracker-status-dot {
+	width: 8px;
+	height: 8px;
+	border-radius: 50%;
+	flex-shrink: 0;
+	background-color: currentColor;
+}
+
+.friend-tracker-last-interaction.is-recent .friend-tracker-status-dot {
+	background-color: var(--color-green);
+}
+
+.friend-tracker-last-interaction.is-due .friend-tracker-status-dot {
+	background-color: var(--color-yellow);
+}
+
+.friend-tracker-last-interaction.is-overdue {
+	color: var(--color-red);
+}
+
+.friend-tracker-last-interaction.is-overdue .friend-tracker-status-dot {
+	background-color: var(--color-red);
+}
+
+/* Narrow sidebars: drop the less important columns */
+@container (max-width: 520px) {
+	.friend-tracker-table .friend-tracker-col-age {
+		display: none;
+	}
+}
+
+@container (max-width: 420px) {
+	.friend-tracker-table .friend-tracker-col-type {
+		display: none;
+	}
 }
 
 /* Base styles for all cells */
@@ -1247,4 +1381,441 @@ If your plugin does not need CSS, delete this file.
 	color: var(--text-muted);
 	font-size: 0.9em;
 	line-height: 1.4;
+}
+
+/* ------------------------------------------------------------------ */
+/* Contact profile page                                                */
+/* ------------------------------------------------------------------ */
+
+.contact-page-header {
+	display: flex;
+	flex-direction: column;
+	gap: var(--size-4-2);
+}
+
+.contact-name-row h1 {
+	flex: 1;
+	min-width: 0;
+}
+
+.contact-menu-button {
+	flex-shrink: 0;
+	color: var(--text-muted);
+}
+
+.contact-header-tags {
+	display: flex;
+	flex-wrap: wrap;
+	gap: var(--size-4-1);
+}
+
+/* Key facts, styled like the overview stats */
+.contact-facts {
+	display: flex;
+	flex-wrap: wrap;
+	gap: var(--size-4-1) var(--size-4-2);
+}
+
+.contact-fact {
+	--contact-fact-rgb: var(--mono-rgb-100);
+	display: inline-flex;
+	align-items: center;
+	gap: var(--size-4-1);
+	padding: 2px var(--size-4-2);
+	border-radius: var(--radius-l);
+	background-color: var(--background-secondary);
+	color: var(--text-normal);
+	font-size: var(--font-ui-small);
+}
+
+.contact-fact-icon {
+	display: inline-flex;
+	color: var(--text-muted);
+}
+
+.contact-fact-icon svg {
+	width: var(--icon-xs);
+	height: var(--icon-xs);
+}
+
+.contact-fact.is-muted {
+	color: var(--text-muted);
+}
+
+.contact-fact.is-clickable {
+	cursor: pointer;
+}
+
+.contact-fact.is-clickable:hover {
+	filter: brightness(0.95);
+}
+
+.contact-fact.is-highlighted,
+.contact-fact.is-status.is-recent {
+	background-color: rgba(var(--color-green-rgb), 0.15);
+}
+
+.contact-fact.is-status.is-due {
+	background-color: rgba(var(--color-yellow-rgb), 0.18);
+}
+
+.contact-fact.is-status.is-overdue {
+	background-color: rgba(var(--color-red-rgb), 0.15);
+	color: var(--color-red);
+}
+
+.contact-fact.is-highlighted .contact-fact-icon,
+.contact-fact.is-status.is-recent .contact-fact-icon {
+	color: var(--color-green);
+}
+
+.contact-fact.is-status.is-due .contact-fact-icon {
+	color: var(--color-yellow);
+}
+
+.contact-fact.is-status.is-overdue .contact-fact-icon {
+	color: var(--color-red);
+}
+
+/* Zodiac, season, birthstone: nice to know, so kept small */
+.contact-trivia {
+	color: var(--text-faint);
+	font-size: var(--font-ui-smaller);
+}
+
+/* Details: icon + label, value, copy button */
+.contact-field-view .contact-field-label {
+	display: inline-flex;
+	align-items: center;
+	gap: var(--size-4-2);
+	width: 120px;
+}
+
+.contact-field-icon {
+	display: inline-flex;
+	color: var(--text-faint);
+}
+
+.contact-field-icon svg {
+	width: var(--icon-s);
+	height: var(--icon-s);
+}
+
+.contact-field-value {
+	min-width: 0;
+	overflow-wrap: anywhere;
+}
+
+.contact-copy-button {
+	flex-shrink: 0;
+	opacity: 0;
+	transition: opacity 0.15s ease;
+}
+
+.contact-field-view:hover .contact-copy-button,
+.contact-copy-button:focus-visible {
+	opacity: 1;
+}
+
+@media (hover: none) {
+	.contact-copy-button {
+		opacity: 1;
+	}
+}
+
+/* "Add phone" etc. for empty fields */
+.contact-field-placeholder {
+	all: unset;
+	cursor: pointer;
+	color: var(--text-faint);
+	font-style: italic;
+}
+
+.contact-field-placeholder:hover,
+.contact-field-placeholder:focus-visible {
+	color: var(--text-accent);
+	text-decoration: underline;
+}
+
+.contact-edit-details {
+	display: inline-flex;
+	align-items: center;
+	gap: var(--size-4-1);
+}
+
+.contact-edit-details svg {
+	width: var(--icon-s);
+	height: var(--icon-s);
+}
+
+.contact-edit-buttons {
+	display: flex;
+	flex-wrap: wrap;
+	gap: var(--size-4-2);
+	justify-content: flex-end;
+}
+
+.contact-field-remove {
+	flex-shrink: 0;
+	color: var(--text-muted);
+}
+
+.contact-field-remove:hover {
+	color: var(--text-error);
+}
+
+/* Tab counters */
+.contact-tab-count {
+	padding: 0 6px;
+	border-radius: var(--radius-l);
+	background-color: var(--background-modifier-hover);
+	color: var(--text-muted);
+	font-size: var(--font-ui-smaller);
+	font-variant-numeric: tabular-nums;
+}
+
+/* Quick add for interactions */
+.contact-quick-add {
+	display: flex;
+	gap: var(--size-4-2);
+	margin: var(--size-4-2) 0 var(--size-4-3);
+}
+
+.contact-quick-add-input {
+	flex: 1;
+	min-width: 0;
+}
+
+/* Input and buttons on one line with the same height (also used by the
+   "Add section" row in the notes tab) */
+.contact-quick-add,
+.contact-note-add {
+	align-items: center;
+}
+
+.contact-quick-add .friend-tracker-button,
+.contact-note-add .friend-tracker-button {
+	flex-shrink: 0;
+	/* The base button style adds a top margin */
+	margin-top: 0;
+	height: var(--input-height);
+}
+
+.contact-quick-add-input,
+.contact-note-add-input {
+	height: var(--input-height);
+}
+
+/* Interaction list: month headings and relative dates */
+.contact-interaction-group {
+	margin: var(--size-4-4) 0 var(--size-4-1);
+	color: var(--text-muted);
+	font-size: var(--font-ui-smaller);
+	font-weight: var(--font-semibold);
+	text-transform: uppercase;
+	letter-spacing: 0.05em;
+}
+
+.contact-interaction-group:first-child {
+	margin-top: 0;
+}
+
+.contact-interaction-date {
+	display: flex;
+	flex-wrap: wrap;
+	gap: var(--size-4-2);
+}
+
+.contact-interaction-relative {
+	color: var(--text-faint);
+}
+
+.contact-undo-button {
+	margin-left: var(--size-4-2);
+}
+
+/* Notes tab: "General" block plus user-defined blocks */
+.contact-notes-section {
+	display: flex;
+	flex-direction: column;
+	gap: var(--size-4-4);
+}
+
+.contact-note-block {
+	display: flex;
+	flex-direction: column;
+	gap: var(--size-4-1);
+}
+
+.contact-note-header {
+	display: flex;
+	align-items: center;
+	gap: var(--size-4-2);
+	min-height: var(--size-4-8);
+}
+
+.contact-note-icon {
+	display: inline-flex;
+	color: var(--text-faint);
+}
+
+.contact-note-icon svg {
+	width: var(--icon-s);
+	height: var(--icon-s);
+}
+
+.contact-note-title {
+	flex: 1;
+	min-width: 0;
+	margin: 0;
+	font-size: var(--font-ui-medium);
+	font-weight: var(--font-semibold);
+	overflow: hidden;
+	text-overflow: ellipsis;
+	white-space: nowrap;
+}
+
+.contact-note-title.is-editable {
+	cursor: text;
+}
+
+.contact-note-title-input {
+	flex: 1;
+	min-width: 0;
+	font-size: var(--font-ui-medium);
+	font-weight: var(--font-semibold);
+}
+
+.contact-note-menu {
+	flex-shrink: 0;
+	color: var(--text-muted);
+	opacity: 0;
+	transition: opacity 0.15s ease;
+}
+
+.contact-note-block:hover .contact-note-menu,
+.contact-note-block:focus-within .contact-note-menu {
+	opacity: 1;
+}
+
+@media (hover: none) {
+	.contact-note-menu {
+		opacity: 1;
+	}
+}
+
+.contact-note-add {
+	display: flex;
+	gap: var(--size-4-2);
+	padding-top: var(--size-4-3);
+	border-top: 1px dashed var(--background-modifier-border);
+}
+
+.contact-note-add-input {
+	flex: 1;
+	min-width: 0;
+}
+
+.contact-note-add .friend-tracker-button {
+	gap: var(--size-4-1);
+}
+
+.contact-note-add .friend-tracker-button svg {
+	width: var(--icon-s);
+	height: var(--icon-s);
+}
+
+.contact-note-block .contact-notes-input {
+	margin-top: 0;
+	min-height: 72px;
+}
+
+/* Row action buttons in the overview table */
+.friend-tracker-row-actions {
+	display: flex;
+	align-items: center;
+	justify-content: flex-end;
+	gap: var(--size-4-1);
+}
+
+.friend-tracker-row-button {
+	display: flex;
+	align-items: center;
+	justify-content: center;
+	padding: 4px;
+	background: none;
+	border: none;
+	box-shadow: none;
+	border-radius: var(--radius-s);
+	color: var(--text-muted);
+	cursor: pointer;
+}
+
+.friend-tracker-row-button svg {
+	width: 16px;
+	height: 16px;
+}
+
+.friend-tracker-row-button:not(.friend-tracker-delete-button):hover {
+	color: var(--text-accent);
+	background-color: var(--background-modifier-hover);
+}
+
+/* Deceased contacts: muted, marked with †, no birthday or contact warnings */
+.friend-tracker-row.is-deceased > td {
+	color: var(--text-muted);
+}
+
+.friend-tracker-row.is-deceased .friend-tracker-tag {
+	opacity: 0.7;
+}
+
+.friend-tracker-deceased-mark {
+	color: var(--text-faint);
+}
+
+.contact-page-header.is-deceased .contact-name-row h1::after {
+	content: " †";
+	color: var(--text-faint);
+	font-weight: var(--font-normal);
+}
+
+.contact-fact.is-deceased {
+	color: var(--text-muted);
+}
+
+.friend-tracker-deceased-form .friend-tracker-modal-buttons {
+	display: flex;
+	justify-content: flex-end;
+	gap: var(--size-4-2);
+}
+
+/* Birthday input with "Year unknown" option */
+.friend-tracker-birthday-input {
+	flex: 1;
+	display: flex;
+	flex-wrap: wrap;
+	align-items: center;
+	gap: var(--size-4-2);
+	min-width: 0;
+}
+
+.friend-tracker-birthday-input > input[type="date"] {
+	flex: 1 1 140px;
+}
+
+.friend-tracker-birthday-yearless {
+	display: flex;
+	gap: var(--size-4-2);
+	flex: 1 1 200px;
+}
+
+.friend-tracker-birthday-toggle {
+	display: inline-flex;
+	align-items: center;
+	gap: var(--size-4-1);
+	color: var(--text-muted);
+	font-size: var(--font-ui-small);
+	white-space: nowrap;
+	cursor: pointer;
 }

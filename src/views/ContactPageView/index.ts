@@ -6,23 +6,87 @@ import {
 	setIcon,
 	MarkdownRenderer,
 	ViewStateResult,
+	Menu,
+	debounce,
+	Debouncer,
 } from "obsidian";
 import type FriendTracker from "@/main";
 import { createRelationshipInput } from "@/components/ContactFields";
+import { createBirthdayInput } from "@/components/BirthdayInput";
 import { InteractionView } from "@/components/InteractionView";
-import type { ContactData, Interaction } from "@/types";
+import type { ContactData, Interaction, NoteSection } from "@/types";
 import { AddFieldModal } from "@/modals/AddFieldModal";
 import { InteractionModal } from "@/modals/InteractionModal";
-import {
-	SPECIAL_INPUT_FIELDS,
-	STANDARD_FIELDS,
-	SYSTEM_FIELDS,
-} from "@/constants";
+import { DeleteContactModal } from "@/modals/DeleteContactModal";
+import { DeceasedModal } from "@/modals/DeceasedModal";
+import { parseDeceased } from "@/services/ContactOperations";
+import { SPECIAL_INPUT_FIELDS, STANDARD_FIELDS } from "@/constants";
 import { splitFrontmatter } from "@/utils/frontmatter";
-import { parseLocalDate } from "@/utils/date";
+import {
+	parseBirthday,
+	parseLocalDate,
+	toLocalISODate,
+} from "@/utils/date";
 import { getContactFilePath, sanitizeFileName } from "@/utils/file";
+import {
+	createRelationshipTag,
+	formatCountdown,
+	getChineseZodiac,
+	getContactStatus,
+} from "@/utils/display";
 
 export const VIEW_TYPE_CONTACT_PAGE = "contact-page-view";
+
+type TabId = "notes" | "interactions" | "markdown";
+
+interface DetailField {
+	key: string;
+	label: string;
+	icon: string;
+}
+
+// Standard contact details, in display order
+const DETAIL_FIELDS: DetailField[] = [
+	{ key: STANDARD_FIELDS.BIRTHDAY, label: "Birthday", icon: "cake" },
+	{ key: STANDARD_FIELDS.PHONE, label: "Phone", icon: "phone" },
+	{ key: STANDARD_FIELDS.EMAIL, label: "Email", icon: "mail" },
+	{ key: STANDARD_FIELDS.ADDRESS, label: "Address", icon: "map-pin" },
+];
+
+const RELATIONSHIP_FIELD: DetailField = {
+	key: STANDARD_FIELDS.RELATIONSHIP,
+	label: "Relationship",
+	icon: "tag",
+};
+
+// Frontmatter keys that are never listed as custom fields
+const NON_CUSTOM_FIELDS: string[] = [
+	STANDARD_FIELDS.NAME,
+	STANDARD_FIELDS.NOTES,
+	STANDARD_FIELDS.NOTE_SECTIONS,
+	STANDARD_FIELDS.INTERACTIONS,
+	STANDARD_FIELDS.CREATED,
+	STANDARD_FIELDS.UPDATED,
+	STANDARD_FIELDS.EXTRAS,
+	STANDARD_FIELDS.DECEASED,
+	RELATIONSHIP_FIELD.key,
+	...DETAIL_FIELDS.map((field) => field.key),
+];
+
+// Notes are saved this long after the last keystroke
+const NOTES_SAVE_DELAY = 1000;
+
+// Offered when adding a notes block; any other title works too
+const NOTE_SECTION_SUGGESTIONS = [
+	"Diet",
+	"Sports",
+	"Hobbies",
+	"Gift ideas",
+	"Family",
+	"Work",
+	"Health",
+	"Favorites",
+];
 
 export class ContactPageView extends ItemView {
 	private _file: TFile | null = null;
@@ -31,7 +95,13 @@ export class ContactPageView extends ItemView {
 	private pendingSaves = 0;
 	private interactionView: InteractionView;
 	public plugin: FriendTracker;
-	private activeTab: "notes" | "interactions" | "markdown";
+	private activeTab: TabId;
+	// UI state that must survive re-renders (e.g. switching tabs)
+	private infoEditing = false;
+	private focusField: string | null = null;
+	private focusQuickAdd = false;
+	private focusNoteSection: number | null = null;
+	private saveNotesDebounced: Debouncer<[], void>;
 
 	public getRelationshipTypes(): string[] {
 		return this.plugin.settings.relationshipTypes;
@@ -53,6 +123,13 @@ export class ContactPageView extends ItemView {
 		this.plugin = _plugin;
 		this.interactionView = new InteractionView(this);
 		this.activeTab = this.plugin.settings.defaultActiveTab;
+		this.saveNotesDebounced = debounce(
+			() => {
+				this.saveContactData();
+			},
+			NOTES_SAVE_DELAY,
+			true
+		);
 	}
 
 	getViewType(): string {
@@ -63,8 +140,22 @@ export class ContactPageView extends ItemView {
 		return this._file?.basename || "Contact";
 	}
 
+	getIcon(): string {
+		return "user";
+	}
+
 	get file() {
 		return this._file;
+	}
+
+	/** Name from the frontmatter, falling back to the file name */
+	private get displayName(): string {
+		const name = this.contactData.name;
+		return (
+			(typeof name === "string" && name.trim()) ||
+			this._file?.basename ||
+			"Unnamed contact"
+		);
 	}
 
 	async setState(state: unknown, result: ViewStateResult) {
@@ -97,6 +188,11 @@ export class ContactPageView extends ItemView {
 		);
 	}
 
+	async onClose() {
+		// Don't lose notes typed right before closing
+		this.saveNotesDebounced.run();
+	}
+
 	private async reloadIfChanged() {
 		const file = this._file;
 		if (!file) return;
@@ -120,6 +216,11 @@ export class ContactPageView extends ItemView {
 	}
 
 	async setFile(file: TFile) {
+		if (this._file && this._file !== file) {
+			// Save pending notes of the previous contact first
+			this.saveNotesDebounced.run();
+			this.infoEditing = false;
+		}
 		this._file = file;
 		const currentFilePath = file.path;
 		try {
@@ -142,71 +243,30 @@ export class ContactPageView extends ItemView {
 	render() {
 		const container = this.containerEl.children[1] as HTMLElement;
 		container.empty();
+		container.addClass("contact-page");
 
-		if (!this.contactData || !this.contactData.name) {
+		if (!this._file) {
 			container.createEl("div", {
-				text: "No contact data available",
+				text: "No contact selected",
 				cls: "contact-empty-state",
 			});
 			return;
 		}
 
-		// Header with name
-		const header = container.createEl("div", {
-			cls: "contact-page-header",
-		});
-		const nameContainer = header.createEl("div", {
-			cls: "contact-name-container",
-		});
-		this.renderNameSection(nameContainer);
+		this.renderHeader(container);
 
-		// Info section (always visible)
 		const infoSection = container.createEl("div", {
 			cls: "contact-info-section",
 		});
 		this.renderInfoSection(infoSection);
 
-		// Tabs container
-		const tabsContainer = container.createEl("div", {
-			cls: "contact-tabs",
-		});
-
-		const tabs = [
-			{ id: "notes" as const, icon: "pencil", label: "Notes" },
-			{
-				id: "interactions" as const,
-				icon: "clock",
-				label: "Interactions",
-			},
-			{
-				id: "markdown" as const,
-				icon: "document",
-				label: "Markdown",
-			},
-		];
-
-		tabs.forEach((tab) => {
-			const tabButton = tabsContainer.createEl("button", {
-				cls: `contact-tab ${this.activeTab === tab.id ? "active" : ""}`,
-			});
-
-			setIcon(tabButton, tab.icon);
-			tabButton.createSpan({ text: tab.label });
-
-			tabButton.addEventListener("click", async () => {
-				this.activeTab = tab.id;
-				this.plugin.settings.defaultActiveTab = tab.id;
-				await this.plugin.saveSettings();
-				this.render();
-			});
-		});
+		this.renderTabs(container);
 
 		// Content container for tab content
 		const contentContainer = container.createEl("div", {
 			cls: "contact-content",
 		});
 
-		// Render content based on active tab
 		switch (this.activeTab) {
 			case "notes":
 				this.renderNotesSection(contentContainer);
@@ -220,121 +280,154 @@ export class ContactPageView extends ItemView {
 		}
 	}
 
+	// ---------------------------------------------------------------------
+	// Header: name, relationship, key facts, trivia
+	// ---------------------------------------------------------------------
+
+	private get death() {
+		return parseDeceased(this.contactData.deceased);
+	}
+
+	private renderHeader(container: HTMLElement) {
+		const header = container.createEl("div", {
+			cls: "contact-page-header",
+		});
+		if (this.death.deceased) header.addClass("is-deceased");
+
+		this.renderNameSection(header);
+
+		const relationship = this.contactData.relationship;
+		if (typeof relationship === "string" && relationship.trim()) {
+			const tags = header.createDiv({ cls: "contact-header-tags" });
+			createRelationshipTag(tags, relationship.trim().toLowerCase());
+		}
+
+		this.renderFacts(header);
+	}
+
+	/** The most important facts at a glance, colored like the overview */
+	private renderFacts(header: HTMLElement) {
+		const ops = this.plugin.contactOperations;
+		const facts = header.createDiv({ cls: "contact-facts" });
+		const addFact = (icon: string, text: string, cls = "") => {
+			const fact = facts.createDiv({ cls: `contact-fact ${cls}` });
+			setIcon(fact.createSpan({ cls: "contact-fact-icon" }), icon);
+			fact.createSpan({ text });
+			return fact;
+		};
+
+		const birthday =
+			typeof this.contactData.birthday === "string"
+				? this.contactData.birthday
+				: "";
+		// May lack the year ("--MM-DD")
+		const birthParts = parseBirthday(birthday);
+		const death = this.death;
+
+		if (death.deceased) {
+			// Instead of countdown and current age: date of death, age then
+			const deathText = death.date
+				? ops.formatBirthday(toLocalISODate(death.date), true)
+				: "";
+			addFact(
+				"flower",
+				deathText ? `Died ${deathText}` : "Deceased",
+				"is-deceased"
+			);
+			const age = death.date
+				? ops.calculateAge(birthday, death.date)
+				: null;
+			if (age !== null) addFact("hourglass", `Aged ${age}`);
+		} else if (birthParts) {
+			const days = ops.calculateDaysUntilBirthday(birthday);
+			if (days !== null) {
+				addFact(
+					"cake",
+					days === 0
+						? "Birthday today 🎂"
+						: `Birthday ${formatCountdown(days)}`,
+					days <= 7 ? "is-highlighted" : ""
+				);
+			}
+			// Empty when the birth year is unknown
+			const age = ops.calculateDetailedAge(birthday);
+			if (age) addFact("hourglass", age);
+		}
+
+		const daysSince = ops.calculateDaysSinceLastInteraction(
+			this.contactData.interactions
+		);
+		let lastContact: HTMLElement;
+		if (daysSince === null) {
+			lastContact = addFact(
+				"message-circle",
+				"No interactions yet",
+				"is-muted"
+			);
+		} else {
+			const ago = ops.formatDaysAgo(daysSince).toLowerCase();
+			lastContact = addFact(
+				"message-circle",
+				`Last contact: ${ago}`,
+				// No "overdue" warning for someone who has passed away
+				death.deceased
+					? "is-muted"
+					: `is-status ${getContactStatus(daysSince)}`
+			);
+		}
+		// Jump to the interactions tab
+		lastContact.addClass("is-clickable");
+		lastContact.addEventListener("click", () =>
+			this.switchTab("interactions")
+		);
+
+		if (birthParts) {
+			const { year, month, day } = birthParts;
+			const trivia = [this.getZodiacSign(month, day)];
+			// The Chinese zodiac needs the year
+			if (year !== null) {
+				const birthDate = new Date(year, month - 1, day);
+				trivia.push(`Year of the ${getChineseZodiac(birthDate)}`);
+			}
+			trivia.push(
+				`${this.getSeason(month, day)} baby`,
+				`Birthstone: ${this.getBirthstone(month)}`
+			);
+			header.createDiv({
+				cls: "contact-trivia",
+				text: trivia.join(" • "),
+			});
+		}
+	}
+
 	private renderNameSection(container: HTMLElement) {
-		const nameSection = container.createEl("div", {
-			cls: "contact-name-section",
-		});
-
-		const nameDisplay = nameSection.createEl("div", {
-			cls: "contact-name-display",
-		});
-
-		const editContainer = nameDisplay.createEl("div", {
+		const editContainer = container.createEl("div", {
 			cls: "contact-name-row",
 		});
 
 		const nameText = editContainer.createEl("h1", {
-			text: this.contactData.name || "Unnamed Contact",
+			text: this.displayName,
 		});
 
 		const nameInput = editContainer.createEl("input", {
 			type: "text",
-			value: this.contactData.name || "",
+			value: this.displayName,
 			placeholder: "Contact name",
 			cls: "contact-name-input",
 		});
 
 		const editButton = editContainer.createEl("button", {
 			cls: "friend-tracker-button button-icon contact-name-edit",
+			attr: { "aria-label": "Rename contact" },
 		});
 		setIcon(editButton, "pencil");
 
-		// Add age display if birthday exists
-		const birthDate = parseLocalDate(this.contactData.birthday);
-		if (this.contactData.birthday && birthDate) {
-			const ageText = this.plugin.contactOperations.calculateDetailedAge(
-				this.contactData.birthday
-			);
-			nameDisplay.createEl("span", {
-				text: ageText,
-				cls: "contact-age-display",
-			});
-
-			// Add both zodiac displays
-			const year = birthDate.getFullYear();
-			const month = birthDate.getMonth() + 1;
-			const day = birthDate.getDate();
-			const animals = [
-				"Rat",
-				"Ox",
-				"Tiger",
-				"Rabbit",
-				"Dragon",
-				"Snake",
-				"Horse",
-				"Goat",
-				"Monkey",
-				"Rooster",
-				"Dog",
-				"Pig",
-			];
-			const chineseZodiac = animals[(((year - 4) % 12) + 12) % 12];
-			const westernZodiac = this.getZodiacSign(month, day);
-
-			const season = this.getSeason(month, day);
-			const birthstone = this.getBirthstone(month);
-
-			nameDisplay.createEl("span", {
-				text: `${westernZodiac} • Year of the ${chineseZodiac}`,
-				cls: "contact-age-display",
-			});
-			nameDisplay.createEl("span", {
-				text: `${season} baby • Birthstone: ${birthstone}`,
-				cls: "contact-age-display",
-			});
-
-			const daysUntil = this.calculateDaysUntilBirthday(
-				this.contactData.birthday
-			);
-			if (daysUntil !== null) {
-				const countdownContainer = nameDisplay.createEl("div", {
-					cls: "contact-birthday-countdown",
-				});
-
-				if (daysUntil === 0) {
-					// Birthday today - show cake
-					countdownContainer.createEl("div", {
-						cls: "table-birthday-indicator birthday-today",
-						text: "🎂",
-					});
-					countdownContainer.createSpan({
-						text: "Birthday today!",
-					});
-				} else {
-					// Show dot if within a week
-					if (daysUntil <= 7) {
-						const dotContainer = countdownContainer.createEl(
-							"div",
-							{
-								cls: "birthday-status-dot",
-							}
-						);
-						dotContainer.createEl("div", {
-							cls: "birthday-status-dot-inner",
-						});
-					}
-
-					const daysText =
-						daysUntil === 1
-							? "Birthday tomorrow!"
-							: `${daysUntil} days until birthday`;
-
-					countdownContainer.createSpan({
-						text: daysText,
-					});
-				}
-			}
-		}
+		const menuButton = editContainer.createEl("button", {
+			cls: "clickable-icon contact-menu-button",
+			attr: { "aria-label": "More options" },
+		});
+		setIcon(menuButton, "more-vertical");
+		menuButton.addEventListener("click", (e) => this.openMenu(e));
 
 		const setEditing = (editing: boolean) => {
 			nameText.classList.toggle("editing", editing);
@@ -362,9 +455,9 @@ export class ContactPageView extends ItemView {
 
 			try {
 				const newName = nameInput.value.trim();
-				const currentName = this.contactData.name ?? "";
+				const currentName = this.displayName;
 
-				if (!newName || newName === currentName) {
+				if (!newName || newName === this.contactData.name) {
 					nameInput.value = currentName;
 					return;
 				}
@@ -402,8 +495,7 @@ export class ContactPageView extends ItemView {
 				await this.saveContactData();
 				new Notice(`Updated contact name`);
 			} finally {
-				nameText.textContent =
-					this.contactData.name || "Unnamed Contact";
+				nameText.textContent = this.displayName;
 				setEditing(false);
 				isSaving = false;
 			}
@@ -412,10 +504,82 @@ export class ContactPageView extends ItemView {
 		nameInput.addEventListener("change", saveNameChange);
 	}
 
-	private calculateDaysUntilBirthday(birthday: string): number | null {
-		return this.plugin.contactOperations.calculateDaysUntilBirthday(
-			birthday
+	private openDeceasedModal() {
+		const date = this.death.date;
+		new DeceasedModal(
+			this.app,
+			this.displayName,
+			date ? toLocalISODate(date) : "",
+			(newDate) => this.setDeceased(newDate)
+		).open();
+	}
+
+	/**
+	 * Store the date of death ("" = date unknown) or, with null, remove
+	 * the mark again
+	 */
+	private async setDeceased(date: string | null) {
+		const key = STANDARD_FIELDS.DECEASED;
+		if (date === null) {
+			delete this.contactData[key];
+			await this.saveContactData([key]);
+		} else {
+			this.contactData[key] = date || true;
+			await this.saveContactData();
+		}
+		this.render();
+	}
+
+	private openMenu(event: MouseEvent) {
+		const file = this._file;
+		if (!file) return;
+
+		const menu = new Menu();
+		menu.addItem((item) =>
+			item
+				.setTitle("Open note")
+				.setIcon("file-text")
+				.onClick(() => this.app.workspace.getLeaf("tab").openFile(file))
 		);
+		menu.addItem((item) =>
+			item
+				.setTitle("Show all contacts")
+				.setIcon("users")
+				.onClick(() => this.plugin.activateView())
+		);
+		menu.addSeparator();
+
+		const death = this.death;
+		menu.addItem((item) =>
+			item
+				.setTitle(
+					death.deceased ? "Edit date of death" : "Mark as deceased"
+				)
+				.setIcon("flower")
+				.onClick(() => this.openDeceasedModal())
+		);
+		if (death.deceased) {
+			menu.addItem((item) =>
+				item
+					.setTitle("Remove deceased mark")
+					.setIcon("undo-2")
+					.onClick(() => this.setDeceased(null))
+			);
+		}
+
+		menu.addSeparator();
+		menu.addItem((item) =>
+			item
+				.setTitle("Delete contact")
+				.setIcon("trash")
+				.onClick(() => {
+					// The view closes itself when the file is deleted
+					new DeleteContactModal(this.app, file, async () => {
+						await this.app.fileManager.trashFile(file);
+					}).open();
+				})
+		);
+		menu.showAtMouseEvent(event);
 	}
 
 	private getZodiacSign(month: number, day: number): string {
@@ -488,137 +652,252 @@ export class ContactPageView extends ItemView {
 		return stones[month] || "Unknown";
 	}
 
-	private renderInfoSection(container: HTMLElement) {
-		const infoSection = container.createEl("div", {
-			cls: "contact-info-section",
-		});
+	// ---------------------------------------------------------------------
+	// Contact details
+	// ---------------------------------------------------------------------
 
-		const fieldsContainer = infoSection.createEl("div", {
+	private renderInfoSection(section: HTMLElement) {
+		section.empty();
+		const fieldsContainer = section.createEl("div", {
 			cls: "contact-fields-container",
 		});
 
-		const renderViewMode = () => {
-			fieldsContainer.empty();
-			fieldsContainer.classList.remove("editing");
+		if (this.infoEditing) {
+			this.renderInfoEditMode(section, fieldsContainer);
+		} else {
+			this.renderInfoViewMode(section, fieldsContainer);
+		}
+	}
 
-			// Render each field as read-only text
-			Object.entries(this.contactData)
-				.filter(
-					([key]) =>
-						![
-							"name",
-							"notes",
-							"interactions",
-							"created",
-							"updated",
-						].includes(key)
-				)
-				.forEach(([key, value]) => {
-					if (!value) return; // Skip empty values
+	/** Custom frontmatter fields, in file order */
+	private getCustomFields(): Array<[string, unknown]> {
+		return Object.entries(this.contactData).filter(
+			([key]) => !NON_CUSTOM_FIELDS.includes(key.toLowerCase())
+		);
+	}
 
-					const field = fieldsContainer.createEl("div", {
-						cls: "contact-field-view",
-						attr: {
-							"data-field": key.toLowerCase(),
-						},
-					});
+	private renderInfoViewMode(
+		section: HTMLElement,
+		fieldsContainer: HTMLElement
+	) {
+		fieldsContainer.removeClass("editing");
+		const ops = this.plugin.contactOperations;
 
-					field.createEl("div", {
-						cls: "contact-field-label",
-						text: key,
-					});
+		for (const { key, label, icon } of DETAIL_FIELDS) {
+			const value = formatFieldValue(this.contactData[key]);
+			const row = this.createDetailRow(fieldsContainer, key, icon, label);
+			const valueEl = row.createDiv({ cls: "contact-field-value" });
 
-					// Format birthday in view mode
-					const ops = this.plugin.contactOperations;
-					const displayValue =
-						key === "birthday"
-							? ops.formatBirthday(String(value), true)
-							: String(value);
+			if (!value) {
+				// Empty fields invite filling them in
+				this.renderPlaceholder(section, valueEl, key, label);
+				continue;
+			}
 
-					field.createEl("div", {
-						cls: "contact-field-value",
-						text: displayValue as string,
-					});
+			if (key === STANDARD_FIELDS.BIRTHDAY) {
+				valueEl.setText(ops.formatBirthday(value, true));
+			} else if (key === STANDARD_FIELDS.PHONE) {
+				valueEl.createEl("a", {
+					text: value,
+					href: `tel:${value.replace(/[^\d+]/g, "")}`,
 				});
+				this.addCopyButton(row, value, label);
+			} else if (key === STANDARD_FIELDS.EMAIL) {
+				valueEl.createEl("a", { text: value, href: `mailto:${value}` });
+				this.addCopyButton(row, value, label);
+			} else {
+				valueEl.setText(value);
+				this.addCopyButton(row, value, label);
+			}
+		}
 
-			// Add edit button at the bottom
-			const editButton = fieldsContainer.createEl("button", {
-				cls: "friend-tracker-button",
-				text: "Edit",
+		const death = this.death;
+		if (death.deceased) {
+			const row = this.createDetailRow(
+				fieldsContainer,
+				STANDARD_FIELDS.DECEASED,
+				"flower",
+				"Died"
+			);
+			row.createDiv({
+				cls: "contact-field-value",
+				text: death.date
+					? ops.formatBirthday(toLocalISODate(death.date), true)
+					: "Date unknown",
 			});
+		}
 
-			editButton.addEventListener("click", () => {
-				renderEditMode();
-			});
-		};
+		for (const [key, rawValue] of this.getCustomFields()) {
+			const value = formatFieldValue(rawValue);
+			// Nested values (objects) can't be shown meaningfully
+			if (value === null) continue;
 
-		const renderEditMode = () => {
-			fieldsContainer.empty();
-			fieldsContainer.classList.add("editing");
+			const row = this.createDetailRow(
+				fieldsContainer,
+				key,
+				"list",
+				capitalize(key)
+			);
+			const valueEl = row.createDiv({ cls: "contact-field-value" });
+			if (!value) {
+				this.renderPlaceholder(section, valueEl, key, key);
+				continue;
+			}
+			valueEl.setText(value);
+			this.addCopyButton(row, value, capitalize(key));
+		}
 
-			// Standard fields first
-			Object.values(STANDARD_FIELDS)
-				.filter((field) => !SYSTEM_FIELDS.includes(field))
-				.forEach((field) => {
-					this.createInfoField(
-						fieldsContainer,
-						field,
-						this.contactData[field]
-					);
-				});
+		const editButton = section.createEl("button", {
+			cls: "friend-tracker-button contact-edit-details",
+		});
+		setIcon(editButton.createSpan(), "pencil");
+		editButton.createSpan({ text: "Edit details" });
+		editButton.addEventListener("click", () => this.startEditing(null));
+	}
 
-			// Then custom fields
-			const excludedFields = [
-				...SYSTEM_FIELDS,
-				...Object.values(STANDARD_FIELDS).map((f) => f.toLowerCase()),
-				"created",
-				"updated",
-			];
-			Object.entries(this.contactData)
-				.filter(([key]) => !excludedFields.includes(key.toLowerCase()))
-				.forEach(([key, value]) => {
-					this.createInfoField(fieldsContainer, key, value);
-				});
+	private createDetailRow(
+		container: HTMLElement,
+		key: string,
+		icon: string,
+		label: string
+	): HTMLElement {
+		const row = container.createEl("div", {
+			cls: "contact-field-view",
+			attr: { "data-field": key.toLowerCase() },
+		});
+		const labelEl = row.createDiv({ cls: "contact-field-label" });
+		setIcon(labelEl.createSpan({ cls: "contact-field-icon" }), icon);
+		labelEl.createSpan({ text: label });
+		return row;
+	}
 
-			// Add custom field button
-			const addFieldButton = fieldsContainer.createEl("button", {
-				cls: "friend-tracker-button button-outlined",
-				text: "Add custom field",
-			});
-			addFieldButton.addEventListener("click", () => {
-				this.openAddFieldModal();
-			});
+	private renderPlaceholder(
+		section: HTMLElement,
+		valueEl: HTMLElement,
+		key: string,
+		label: string
+	) {
+		const placeholder = valueEl.createEl("button", {
+			cls: "contact-field-placeholder",
+			text: `Add ${label.toLowerCase()}`,
+		});
+		placeholder.addEventListener("click", () => this.startEditing(key));
+	}
 
-			// Add done button
-			const doneButton = fieldsContainer.createEl("button", {
-				cls: "friend-tracker-button button-primary button-full-width",
-				text: "Done",
-			});
+	private addCopyButton(row: HTMLElement, value: string, label: string) {
+		const button = row.createEl("button", {
+			cls: "clickable-icon contact-copy-button",
+			attr: { "aria-label": `Copy ${label.toLowerCase()}` },
+		});
+		setIcon(button, "copy");
+		button.addEventListener("click", async () => {
+			try {
+				await navigator.clipboard.writeText(value);
+				new Notice(`${label} copied`);
+			} catch {
+				new Notice("Could not copy to clipboard");
+			}
+		});
+	}
 
-			doneButton.addEventListener("click", async () => {
-				await this.saveContactData();
-				renderViewMode();
-			});
-		};
+	/** Switch details to edit mode, optionally focusing one field */
+	private startEditing(focusField: string | null) {
+		this.infoEditing = true;
+		this.focusField = focusField;
+		this.rerenderInfo();
+	}
 
-		// Initial render in view mode
-		renderViewMode();
+	private rerenderInfo() {
+		const section = this.containerEl.querySelector<HTMLElement>(
+			".contact-info-section"
+		);
+		if (section) this.renderInfoSection(section);
+	}
+
+	private renderInfoEditMode(
+		section: HTMLElement,
+		fieldsContainer: HTMLElement
+	) {
+		fieldsContainer.addClass("editing");
+
+		for (const field of [...DETAIL_FIELDS, RELATIONSHIP_FIELD]) {
+			this.createInfoField(
+				fieldsContainer,
+				field.key,
+				field.label,
+				this.contactData[field.key]
+			);
+		}
+
+		// Custom fields with simple values; lists and nested values stay
+		// untouched (they can still be edited in the note itself)
+		for (const [key, value] of this.getCustomFields()) {
+			if (value !== null && typeof value === "object") continue;
+			this.createInfoField(
+				fieldsContainer,
+				key,
+				capitalize(key),
+				value,
+				true
+			);
+		}
+
+		const buttons = section.createDiv({ cls: "contact-edit-buttons" });
+
+		const addFieldButton = buttons.createEl("button", {
+			cls: "friend-tracker-button button-outlined",
+			text: "Add custom field",
+		});
+		addFieldButton.addEventListener("click", () => {
+			this.openAddFieldModal();
+		});
+
+		const doneButton = buttons.createEl("button", {
+			cls: "friend-tracker-button button-primary",
+			text: "Done",
+		});
+		doneButton.addEventListener("click", async () => {
+			await this.saveContactData();
+			this.infoEditing = false;
+			// Re-render everything: the header shows birthday and relationship
+			this.render();
+		});
+
+		if (this.focusField) {
+			const input = fieldsContainer.querySelector<HTMLInputElement>(
+				`[data-field="${CSS.escape(this.focusField.toLowerCase())}"] input`
+			);
+			input?.focus();
+			this.focusField = null;
+		}
 	}
 
 	private createInfoField(
 		container: HTMLElement,
 		field: string,
-		value: unknown
+		label: string,
+		value: unknown,
+		removable = false
 	) {
 		const fieldContainer = container.createEl("div", {
 			cls: "contact-field",
+			attr: { "data-field": field.toLowerCase() },
 		});
 
 		fieldContainer.createEl("label", {
-			text: field,
+			text: label,
 		});
 
 		const stringValue = value == null ? "" : String(value);
+
+		if (field === STANDARD_FIELDS.BIRTHDAY) {
+			// Date input with a "Year unknown" option
+			createBirthdayInput(fieldContainer, stringValue, {
+				inputCls: "contact-field-input",
+				onChange: (newValue) => this.updateContactData(field, newValue),
+			});
+			return;
+		}
 
 		if (field === STANDARD_FIELDS.RELATIONSHIP) {
 			// Shared input that also provides the suggestion list
@@ -648,7 +927,7 @@ export class ContactPageView extends ItemView {
 					SPECIAL_INPUT_FIELDS[
 						field as keyof typeof SPECIAL_INPUT_FIELDS
 					] ?? "text",
-				placeholder: `Enter ${field.toLowerCase()}`,
+				placeholder: `Enter ${label.toLowerCase()}`,
 				value: stringValue,
 			},
 		});
@@ -656,72 +935,495 @@ export class ContactPageView extends ItemView {
 		input.addEventListener("change", () => {
 			this.updateContactData(field, input.value);
 		});
+
+		if (removable) {
+			const removeButton = fieldContainer.createEl("button", {
+				cls: "clickable-icon contact-field-remove",
+				attr: { "aria-label": `Remove field "${label}"` },
+			});
+			setIcon(removeButton, "x");
+			removeButton.addEventListener("click", () =>
+				this.removeField(field)
+			);
+		}
 	}
+
+	private async removeField(field: string) {
+		delete this.contactData[field];
+		await this.saveContactData([field]);
+		this.rerenderInfo();
+	}
+
+	// ---------------------------------------------------------------------
+	// Tabs
+	// ---------------------------------------------------------------------
+
+	private renderTabs(container: HTMLElement) {
+		const tabsContainer = container.createEl("div", {
+			cls: "contact-tabs",
+		});
+
+		const interactionCount = Array.isArray(this.contactData.interactions)
+			? this.contactData.interactions.length
+			: 0;
+
+		const tabs: Array<{
+			id: TabId;
+			icon: string;
+			label: string;
+			count?: number;
+		}> = [
+			{ id: "notes", icon: "pencil", label: "Notes" },
+			{
+				id: "interactions",
+				icon: "clock",
+				label: "Interactions",
+				count: interactionCount,
+			},
+			{ id: "markdown", icon: "document", label: "Markdown" },
+		];
+
+		tabs.forEach((tab) => {
+			const tabButton = tabsContainer.createEl("button", {
+				cls: `contact-tab ${this.activeTab === tab.id ? "active" : ""}`,
+			});
+
+			setIcon(tabButton, tab.icon);
+			tabButton.createSpan({ text: tab.label });
+			if (tab.count) {
+				tabButton.createSpan({
+					cls: "contact-tab-count",
+					text: String(tab.count),
+				});
+			}
+
+			tabButton.addEventListener("click", () => this.switchTab(tab.id));
+		});
+	}
+
+	private async switchTab(tab: TabId) {
+		// Save notes before the textarea disappears
+		this.saveNotesDebounced.run();
+		this.activeTab = tab;
+		this.render();
+		this.plugin.settings.defaultActiveTab = tab;
+		await this.plugin.saveSettings();
+	}
+
+	// ---------------------------------------------------------------------
+	// Notes
+	// ---------------------------------------------------------------------
 
 	private renderNotesSection(container: HTMLElement) {
 		const notesSection = container.createEl("div", {
 			cls: "contact-notes-section",
 		});
 
-		const notesInput = notesSection.createEl("textarea", {
-			cls: "contact-notes-input",
-			attr: {
-				placeholder:
-					"Add notes about family members, parents' names, or anything else you want to remember...",
+		// Fixed block for general notes (stored in "notes")
+		this.renderNoteBlock(notesSection, {
+			title: "General",
+			icon: "info",
+			value:
+				typeof this.contactData.notes === "string"
+					? this.contactData.notes
+					: "",
+			placeholder:
+				"Add notes about family members, parents' names, or anything else you want to remember...",
+			onChange: (value) => {
+				this.contactData.notes = value;
 			},
 		});
-		notesInput.value = this.contactData.notes || "";
 
-		notesInput.addEventListener("input", () => {
-			this.adjustTextareaHeight(notesInput);
+		// User-defined blocks (stored in "note_sections")
+		const sections = this.getNoteSections();
+		sections.forEach((section, index) => {
+			const textarea = this.renderNoteBlock(notesSection, {
+				title: section.title,
+				icon: "hash",
+				value: section.text,
+				placeholder: `Notes about ${section.title.toLowerCase()}...`,
+				onChange: (value) => {
+					section.text = value;
+				},
+				onMenu: (event) => this.openNoteSectionMenu(event, index),
+				onRename: (title) => this.renameNoteSection(index, title),
+			});
+			if (this.focusNoteSection === index) {
+				this.focusNoteSection = null;
+				setTimeout(() => textarea.focus(), 0);
+			}
 		});
 
-		setTimeout(() => {
-			this.adjustTextareaHeight(notesInput);
-		}, 0);
+		this.renderAddNoteSection(notesSection, sections);
+	}
 
-		notesInput.addEventListener("change", async () => {
-			if (!this._file) return;
-			this.contactData.notes = notesInput.value;
-			await this.saveContactData();
+	/** A titled notes block with an auto-saving, auto-growing textarea */
+	private renderNoteBlock(
+		container: HTMLElement,
+		options: {
+			title: string;
+			icon: string;
+			value: string;
+			placeholder: string;
+			onChange: (value: string) => void;
+			onMenu?: (event: MouseEvent) => void;
+			onRename?: (title: string) => void;
+		}
+	): HTMLTextAreaElement {
+		const block = container.createDiv({ cls: "contact-note-block" });
+		const header = block.createDiv({ cls: "contact-note-header" });
+
+		setIcon(header.createSpan({ cls: "contact-note-icon" }), options.icon);
+		const titleEl = header.createEl("h3", {
+			cls: "contact-note-title",
+			text: options.title,
+		});
+
+		if (options.onRename) {
+			const onRename = options.onRename;
+			// Double-click the heading to rename it
+			titleEl.addClass("is-editable");
+			titleEl.setAttr("title", "Double-click to rename");
+			titleEl.addEventListener("dblclick", () =>
+				this.editNoteTitle(titleEl, options.title, onRename)
+			);
+		}
+
+		if (options.onMenu) {
+			const menuButton = header.createEl("button", {
+				cls: "clickable-icon contact-note-menu",
+				attr: { "aria-label": "Section options" },
+			});
+			setIcon(menuButton, "more-horizontal");
+			menuButton.addEventListener("click", options.onMenu);
+		}
+
+		const textarea = block.createEl("textarea", {
+			cls: "contact-notes-input",
+			attr: { placeholder: options.placeholder },
+		});
+		textarea.value = options.value;
+
+		// Save shortly after typing stops, not only when leaving the field
+		textarea.addEventListener("input", () => {
+			this.adjustTextareaHeight(textarea);
+			options.onChange(textarea.value);
+			this.saveNotesDebounced();
+		});
+		textarea.addEventListener("blur", () => {
+			this.saveNotesDebounced.run();
+		});
+
+		setTimeout(() => this.adjustTextareaHeight(textarea), 0);
+		return textarea;
+	}
+
+	/** Swap a block heading for an input; Enter saves, Escape cancels */
+	private editNoteTitle(
+		titleEl: HTMLElement,
+		currentTitle: string,
+		onRename: (title: string) => void
+	) {
+		const input = createEl("input", {
+			cls: "contact-note-title-input",
+			attr: { type: "text", value: currentTitle },
+		});
+		titleEl.replaceWith(input);
+		input.focus();
+		input.select();
+
+		let done = false;
+		const finish = (save: boolean) => {
+			if (done) return;
+			done = true;
+			const title = input.value.trim();
+			input.replaceWith(titleEl);
+			if (save && title && title !== currentTitle) onRename(title);
+		};
+		input.addEventListener("keydown", (e) => {
+			if (e.key === "Enter") {
+				e.preventDefault();
+				finish(true);
+			} else if (e.key === "Escape") {
+				e.preventDefault();
+				finish(false);
+			}
+		});
+		input.addEventListener("blur", () => finish(true));
+	}
+
+	private renderAddNoteSection(
+		container: HTMLElement,
+		sections: NoteSection[]
+	) {
+		const form = container.createEl("form", {
+			cls: "contact-note-add",
+		});
+		const input = form.createEl("input", {
+			cls: "contact-note-add-input",
+			attr: {
+				type: "text",
+				placeholder: "New section, e.g. Diet or Sports",
+				list: "friend-tracker-note-sections",
+				"aria-label": "Name of the new notes section",
+			},
+		});
+
+		// Suggest common topics that this contact doesn't have yet
+		const datalist = form.createEl("datalist", {
+			attr: { id: "friend-tracker-note-sections" },
+		});
+		const used = sections.map((section) => section.title.toLowerCase());
+		NOTE_SECTION_SUGGESTIONS.filter(
+			(title) => !used.includes(title.toLowerCase())
+		).forEach((title) => datalist.createEl("option", { value: title }));
+
+		const button = form.createEl("button", {
+			cls: "friend-tracker-button",
+			attr: { type: "submit" },
+		});
+		setIcon(button.createSpan(), "plus");
+		button.createSpan({ text: "Add section" });
+
+		form.addEventListener("submit", (e) => {
+			e.preventDefault();
+			this.addNoteSection(input.value);
 		});
 	}
+
+	/**
+	 * Note sections from the frontmatter, cleaned up in place. The same
+	 * objects are kept, because open textareas write into them.
+	 */
+	private getNoteSections(): NoteSection[] {
+		if (!Array.isArray(this.contactData.note_sections)) {
+			this.contactData.note_sections = [];
+		}
+		const sections = this.contactData.note_sections;
+		for (let i = sections.length - 1; i >= 0; i--) {
+			const section = sections[i];
+			if (
+				!section ||
+				typeof section !== "object" ||
+				typeof section.title !== "string" ||
+				!section.title.trim()
+			) {
+				sections.splice(i, 1);
+				continue;
+			}
+			section.title = section.title.trim();
+			if (typeof section.text !== "string") {
+				section.text = section.text == null ? "" : String(section.text);
+			}
+		}
+		return sections;
+	}
+
+	private hasNoteSection(title: string, exceptIndex?: number): boolean {
+		const key = title.trim().toLowerCase();
+		if (key === "general") return true;
+		return this.getNoteSections().some(
+			(section, index) =>
+				index !== exceptIndex && section.title.toLowerCase() === key
+		);
+	}
+
+	private async addNoteSection(rawTitle: string) {
+		const title = rawTitle.trim();
+		if (!title) return;
+		if (this.hasNoteSection(title)) {
+			new Notice(`A section named "${title}" already exists`);
+			return;
+		}
+
+		this.saveNotesDebounced.run();
+		const sections = this.getNoteSections();
+		sections.push({ title, text: "" });
+		await this.saveContactData();
+		this.focusNoteSection = sections.length - 1;
+		this.render();
+	}
+
+	private async renameNoteSection(index: number, title: string) {
+		const sections = this.getNoteSections();
+		if (!sections[index]) return;
+		if (this.hasNoteSection(title, index)) {
+			new Notice(`A section named "${title}" already exists`);
+			this.render();
+			return;
+		}
+		this.saveNotesDebounced.run();
+		sections[index].title = title;
+		await this.saveContactData();
+		this.render();
+	}
+
+	private async moveNoteSection(index: number, offset: number) {
+		const sections = this.getNoteSections();
+		const target = index + offset;
+		if (!sections[index] || !sections[target]) return;
+		this.saveNotesDebounced.run();
+		[sections[index], sections[target]] = [sections[target], sections[index]];
+		await this.saveContactData();
+		this.render();
+	}
+
+	private async deleteNoteSection(index: number) {
+		const sections = this.getNoteSections();
+		if (!sections[index]) return;
+		this.saveNotesDebounced.run();
+		const [removed] = sections.splice(index, 1);
+		await this.saveContactData();
+		this.render();
+
+		this.showUndoNotice(`Section "${removed.title}" deleted`, () => {
+			const current = this.getNoteSections();
+			current.splice(Math.min(index, current.length), 0, removed);
+		});
+	}
+
+	private openNoteSectionMenu(event: MouseEvent, index: number) {
+		const count = this.getNoteSections().length;
+		const menu = new Menu();
+		menu.addItem((item) =>
+			item
+				.setTitle("Rename")
+				.setIcon("pencil")
+				.onClick(() => {
+					const titleEl = this.containerEl.querySelectorAll<HTMLElement>(
+						".contact-note-title.is-editable"
+					)[index];
+					const section = this.getNoteSections()[index];
+					if (titleEl && section) {
+						this.editNoteTitle(titleEl, section.title, (title) =>
+							this.renameNoteSection(index, title)
+						);
+					}
+				})
+		);
+		menu.addItem((item) =>
+			item
+				.setTitle("Move up")
+				.setIcon("arrow-up")
+				.setDisabled(index === 0)
+				.onClick(() => this.moveNoteSection(index, -1))
+		);
+		menu.addItem((item) =>
+			item
+				.setTitle("Move down")
+				.setIcon("arrow-down")
+				.setDisabled(index >= count - 1)
+				.onClick(() => this.moveNoteSection(index, 1))
+		);
+		menu.addSeparator();
+		menu.addItem((item) =>
+			item
+				.setTitle("Delete section")
+				.setIcon("trash")
+				.onClick(() => this.deleteNoteSection(index))
+		);
+		menu.showAtMouseEvent(event);
+	}
+
+	/**
+	 * Notice with an "Undo" button. `restore` puts the data back; saving
+	 * and re-rendering happen here.
+	 */
+	private showUndoNotice(message: string, restore: () => void) {
+		const file = this._file;
+		const notice = new Notice(
+			createFragment((fragment) => {
+				fragment.createSpan({ text: message });
+				const undo = fragment.createEl("button", {
+					cls: "contact-undo-button",
+					text: "Undo",
+				});
+				undo.addEventListener("click", async () => {
+					notice.hide();
+					// The page may show another contact by now
+					if (this._file !== file) return;
+					restore();
+					await this.saveContactData();
+					this.render();
+				});
+			}),
+			8000
+		);
+	}
+
+	// ---------------------------------------------------------------------
+	// Interactions
+	// ---------------------------------------------------------------------
 
 	private renderInteractionsSection(container: HTMLElement) {
 		const interactions = container.createEl("div", {
 			cls: "contact-interactions",
 		});
 
-		const headerContainer = interactions.createEl("div", {
-			cls: "contact-interactions-header",
+		// Quick add: type and press Enter to log something for today
+		const quickAdd = interactions.createEl("form", {
+			cls: "contact-quick-add",
 		});
-
-		// Add helper text if no interactions
-		if (
-			!Array.isArray(this.contactData.interactions) ||
-			this.contactData.interactions.length === 0
-		) {
-			headerContainer.createEl("div", {
-				cls: "section-helper-text",
-				text: "Log meaningful touchpoints like meetings, calls, or important conversations to help maintain strong relationships",
-			});
-		}
-
-		const addButton = headerContainer.createEl("button", {
-			cls: "friend-tracker-button button-align-right",
-			text: "Add interaction",
+		const quickInput = quickAdd.createEl("input", {
+			cls: "contact-quick-add-input",
+			attr: {
+				type: "text",
+				placeholder: "What did you do together today?",
+				"aria-label": "Log an interaction for today",
+			},
 		});
-		addButton.addEventListener("click", () => {
+		const submitButton = quickAdd.createEl("button", {
+			cls: "friend-tracker-button button-primary",
+			attr: { type: "submit", "aria-label": "Add for today" },
+		});
+		setIcon(submitButton, "plus");
+		const datedButton = quickAdd.createEl("button", {
+			cls: "friend-tracker-button",
+			attr: { type: "button", "aria-label": "Add with a date" },
+		});
+		setIcon(datedButton, "calendar-plus");
+
+		quickAdd.addEventListener("submit", (e) => {
+			e.preventDefault();
+			const text = quickInput.value.trim();
+			if (!text) return;
+			this.focusQuickAdd = true;
+			this.addInteraction(toLocalISODate(new Date()), text);
+		});
+		datedButton.addEventListener("click", () => {
 			this.openAddInteractionModal();
 		});
 
-		if (Array.isArray(this.contactData.interactions)) {
-			this.interactionView.render(
-				interactions,
-				this.contactData.interactions
-			);
+		if (this.focusQuickAdd) {
+			this.focusQuickAdd = false;
+			setTimeout(() => quickInput.focus(), 0);
 		}
+
+		const list = this.contactData.interactions;
+		if (!Array.isArray(list) || list.length === 0) {
+			interactions.createEl("div", {
+				cls: "section-helper-text",
+				text: "Log meaningful touchpoints like meetings, calls, or important conversations to help maintain strong relationships",
+			});
+			return;
+		}
+
+		this.interactionView.render(interactions, list);
 	}
+
+	private async addInteraction(date: string, text: string) {
+		if (!Array.isArray(this.contactData.interactions)) {
+			this.contactData.interactions = [];
+		}
+		this.contactData.interactions.push({ date, text });
+		await this.saveContactData();
+		// Header (last contact) and tab count change too
+		this.render();
+	}
+
+	// ---------------------------------------------------------------------
+	// Markdown
+	// ---------------------------------------------------------------------
 
 	private async renderExtrasSection(container: HTMLElement) {
 		const extrasSection = container.createEl("div", {
@@ -729,6 +1431,7 @@ export class ContactPageView extends ItemView {
 		});
 
 		if (!this._file) return;
+		const file = this._file;
 
 		const headerContainer = extrasSection.createEl("div", {
 			cls: "contact-extras-header",
@@ -736,11 +1439,11 @@ export class ContactPageView extends ItemView {
 
 		let extrasContent = "";
 		try {
-			const content = await this.app.vault.read(this._file);
+			const content = await this.app.vault.read(file);
 			extrasContent = splitFrontmatter(content).body;
 		} catch (error) {
 			console.error(
-				`Error reading extras from file ${this._file.path}:`,
+				`Error reading extras from file ${file.path}:`,
 				error
 			);
 		}
@@ -758,8 +1461,9 @@ export class ContactPageView extends ItemView {
 			text: "Edit markdown",
 		});
 
+		// Open the note next to the profile to see changes side by side
 		editButton.addEventListener("click", () => {
-			this.app.workspace.openLinkText(this._file?.path || "", "", true);
+			this.app.workspace.getLeaf("split", "vertical").openFile(file);
 		});
 
 		if (!extrasContent.trim()) return;
@@ -772,7 +1476,7 @@ export class ContactPageView extends ItemView {
 			this.app,
 			extrasContent,
 			contentDiv,
-			this._file.path,
+			file.path,
 			this
 		);
 
@@ -790,7 +1494,7 @@ export class ContactPageView extends ItemView {
 					"";
 				this.app.workspace.openLinkText(
 					linkText,
-					this._file?.path || "",
+					file.path,
 					event.ctrlKey || event.metaKey
 				);
 			} else if (anchor.getAttribute("href")?.startsWith("#")) {
@@ -815,7 +1519,12 @@ export class ContactPageView extends ItemView {
 		textarea.classList.remove("measuring");
 	}
 
-	async saveContactData() {
+	// ---------------------------------------------------------------------
+	// Saving
+	// ---------------------------------------------------------------------
+
+	/** Write contactData to the frontmatter; `removedKeys` are deleted */
+	async saveContactData(removedKeys: string[] = []) {
 		if (!this._file) return;
 		const file = this._file;
 
@@ -834,6 +1543,7 @@ export class ContactPageView extends ItemView {
 				file,
 				(frontmatter) => {
 					Object.assign(frontmatter, this.contactData);
+					for (const key of removedKeys) delete frontmatter[key];
 				}
 			);
 			this.lastContent = await this.app.vault.read(file);
@@ -848,7 +1558,8 @@ export class ContactPageView extends ItemView {
 			if (!(fieldName in this.contactData)) {
 				this.contactData[fieldName] = "";
 				await this.saveContactData();
-				this.render();
+				this.focusField = fieldName;
+				this.rerenderInfo();
 			} else {
 				new Notice("Field already exists!");
 			}
@@ -860,13 +1571,8 @@ export class ContactPageView extends ItemView {
 		const modal = new InteractionModal(
 			this.app,
 			null,
-			async (date: string, text: string) => {
-				if (!Array.isArray(this.contactData.interactions)) {
-					this.contactData.interactions = [];
-				}
-				this.contactData.interactions.push({ date, text });
-				await this.saveContactData();
-				this.render();
+			(date: string, text: string) => {
+				this.addInteraction(date, text);
 			}
 		);
 		modal.open();
@@ -891,15 +1597,44 @@ export class ContactPageView extends ItemView {
 		modal.open();
 	}
 
+	/** Delete an interaction; the notice offers to undo it */
 	public async deleteInteraction(index: number) {
-		if (!Array.isArray(this.contactData.interactions)) return;
-		this.contactData.interactions.splice(index, 1);
+		const list = this.contactData.interactions;
+		if (!Array.isArray(list) || !list[index]) return;
+		const [removed] = list.splice(index, 1);
 		await this.saveContactData();
 		this.render();
+
+		this.showUndoNotice("Interaction deleted", () => {
+			if (!Array.isArray(this.contactData.interactions)) {
+				this.contactData.interactions = [];
+			}
+			// Saving sorts the list by date again
+			this.contactData.interactions.push(removed);
+		});
 	}
 
 	async updateContactData(field: string, value: string) {
 		this.contactData[field] = value;
 		await this.saveContactData();
 	}
+}
+
+/** Display text for a frontmatter value; null for nested objects */
+function formatFieldValue(value: unknown): string | null {
+	if (value == null) return "";
+	if (["string", "number", "boolean"].includes(typeof value)) {
+		return String(value).trim();
+	}
+	if (
+		Array.isArray(value) &&
+		value.every((item) => item == null || typeof item !== "object")
+	) {
+		return value.filter((item) => item != null).join(", ");
+	}
+	return null;
+}
+
+function capitalize(text: string): string {
+	return text.charAt(0).toUpperCase() + text.slice(1);
 }
