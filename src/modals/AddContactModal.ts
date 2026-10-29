@@ -1,8 +1,7 @@
-import { App, Modal, Notice, stringifyYaml } from "obsidian";
+import { App, Modal, Notice } from "obsidian";
 import type FriendTracker from "@/main";
 import { createRelationshipInput } from "@/components/ContactFields";
 import { createBirthdayInput } from "@/components/BirthdayInput";
-import { getContactFilePath, sanitizeFileName } from "@/utils/file";
 
 export class AddContactModal extends Modal {
 	constructor(app: App, private plugin: FriendTracker) {
@@ -126,31 +125,19 @@ export class AddContactModal extends Modal {
 
 	/** Creates the contact file. Returns false if the modal should stay open. */
 	private async onSubmit(data: Record<string, string>): Promise<boolean> {
-		if (!sanitizeFileName(data.name)) {
-			new Notice("Please enter a name with valid characters");
-			return false;
-		}
-
-		const folder = this.plugin.settings.contactsFolder;
-		const filePath = getContactFilePath(folder, data.name);
-
-		if (this.app.vault.getAbstractFileByPath(filePath)) {
-			new Notice(`A contact named "${data.name}" already exists`);
-			return false;
-		}
-
-		// Create YAML frontmatter
-		const yaml = stringifyYaml(data);
-		const fileContent = `---\n${yaml.trimEnd()}\n---\n`;
-
 		try {
-			// Ensure folder exists before creating contact
-			if (!this.app.vault.getFolderByPath(folder)) {
-				await this.app.vault.createFolder(folder);
-			}
-
 			// The Friend Tracker view refreshes itself on file creation
-			await this.app.vault.create(filePath, fileContent);
+			const result = await this.plugin.contactOperations.createContact(
+				data
+			);
+			if (result === "invalid-name") {
+				new Notice("Please enter a name with valid characters");
+				return false;
+			}
+			if (result === "exists") {
+				new Notice(`A contact named "${data.name}" already exists`);
+				return false;
+			}
 			new Notice(`Created contact: ${data.name}`);
 			return true;
 		} catch (error) {

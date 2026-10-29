@@ -9,7 +9,6 @@ import {
 } from "obsidian";
 import type FriendTracker from "@/main";
 import { TableView } from "./TableView";
-import { VIEW_TYPE_CONTACT_PAGE } from "@/views/ContactPageView";
 import type {
 	SortConfig,
 	SortColumn,
@@ -18,6 +17,8 @@ import type {
 import { AddContactModal } from "@/modals/AddContactModal";
 import { DeleteContactModal } from "@/modals/DeleteContactModal";
 import { InteractionModal } from "@/modals/InteractionModal";
+import { ConfirmModal, SetRelationshipModal } from "@/modals/BulkModals";
+import { pluralize } from "@/utils/date";
 
 export const VIEW_TYPE_FRIEND_TRACKER = "friend-tracker-view";
 
@@ -40,6 +41,104 @@ export class FriendTrackerView extends ItemView {
 		this.tableView = new TableView(this, this.plugin.contactOperations);
 	}
 
+	/** Checkboxes and bulk actions instead of opening contacts */
+	selectionMode = false;
+	/** Paths of selected contact files; kept across refreshes */
+	selected = new Set<string>();
+
+	toggleSelectionMode() {
+		this.selectionMode = !this.selectionMode;
+		if (!this.selectionMode) this.selected.clear();
+		this.refresh();
+	}
+
+	/** After a bulk action: clear the selection, keep selection mode */
+	private finishBulkAction() {
+		this.selected.clear();
+		this.refresh();
+	}
+
+	bulkSetRelationship(contacts: ContactWithCountdown[]) {
+		if (contacts.length === 0) return;
+		new SetRelationshipModal(
+			this.app,
+			this.plugin,
+			contacts.length,
+			async (relationship) => {
+				for (const contact of contacts) {
+					await this.app.fileManager.processFrontMatter(
+						contact.file,
+						(frontmatter) => {
+							if (relationship) {
+								frontmatter.relationship = relationship;
+							} else {
+								delete frontmatter.relationship;
+							}
+						}
+					);
+				}
+				const types = this.plugin.settings.relationshipTypes;
+				if (relationship && !types.includes(relationship)) {
+					types.push(relationship);
+					await this.plugin.saveSettings();
+				}
+				new Notice(`Updated ${contacts.length} contacts`);
+				this.finishBulkAction();
+			}
+		).open();
+	}
+
+	/** One interaction (e.g. a group dinner) for all selected contacts */
+	bulkLogInteraction(contacts: ContactWithCountdown[]) {
+		if (contacts.length === 0) return;
+		new InteractionModal(
+			this.app,
+			null,
+			async (interaction) => {
+				for (const contact of contacts) {
+					await this.plugin.contactOperations.addInteraction(
+						contact.file,
+						{ ...interaction }
+					);
+				}
+				new Notice(`Interaction added to ${contacts.length} contacts`);
+				this.finishBulkAction();
+			},
+			pluralize(contacts.length, "contact")
+		).open();
+	}
+
+	bulkDelete(contacts: ContactWithCountdown[]) {
+		if (contacts.length === 0) return;
+		const names = contacts.map((contact) => contact.name);
+		const preview =
+			names.length > 5
+				? `${names.slice(0, 5).join(", ")} and ${names.length - 5} more`
+				: names.join(", ");
+		new ConfirmModal(
+			this.app,
+			`Delete ${pluralize(contacts.length, "contact")}?`,
+			`${preview} will be moved to the trash.`,
+			"Delete",
+			async () => {
+				for (const contact of contacts) {
+					await this.app.fileManager.trashFile(contact.file);
+				}
+				new Notice(`Deleted ${pluralize(contacts.length, "contact")}`);
+				this.finishBulkAction();
+			}
+		).open();
+	}
+
+	get showDeceased(): boolean {
+		return this.plugin.settings.showDeceased;
+	}
+
+	async setShowDeceased(show: boolean) {
+		this.plugin.settings.showDeceased = show;
+		await this.plugin.saveSettings();
+	}
+
 	public async openAddContactModal() {
 		const modal = new AddContactModal(this.app, this.plugin);
 		modal.open();
@@ -56,19 +155,7 @@ export class FriendTrackerView extends ItemView {
 	}
 
 	public async openContact(file: TFile) {
-		// Try to find existing contact page view
-		const leaves = this.app.workspace.getLeavesOfType(
-			VIEW_TYPE_CONTACT_PAGE
-		);
-		const leaf =
-			leaves.length > 0 ? leaves[0] : this.app.workspace.getLeaf("tab");
-
-		await leaf.setViewState({
-			type: VIEW_TYPE_CONTACT_PAGE,
-			state: { filePath: file.path },
-		});
-		this.app.workspace.setActiveLeaf(leaf, { focus: true });
-		this.app.workspace.revealLeaf(leaf);
+		await this.plugin.openContact(file);
 
 		// On mobile, collapse the main view after opening contact
 		if (Platform.isMobile) {
@@ -78,24 +165,7 @@ export class FriendTrackerView extends ItemView {
 
 	/** Log an interaction without opening the contact page */
 	public openAddInteractionModal(contact: ContactWithCountdown) {
-		new InteractionModal(
-			this.app,
-			null,
-			async (date, text) => {
-				try {
-					await this.plugin.contactOperations.addInteraction(
-						contact.file,
-						{ date, text }
-					);
-					// The table refreshes itself on the file change
-					new Notice(`Interaction with ${contact.name} added`);
-				} catch (error) {
-					console.error("Error adding interaction:", error);
-					new Notice(`Could not add interaction: ${error}`);
-				}
-			},
-			contact.name
-		).open();
+		this.plugin.logInteraction(contact);
 	}
 
 	public async openDeleteModal(file: TFile) {

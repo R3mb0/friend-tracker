@@ -1143,11 +1143,6 @@ If your plugin does not need CSS, delete this file.
 	margin-bottom: 0;
 }
 
-:root {
-	--color-green: rgb(74, 222, 128);
-	--color-green-rgb: 74, 222, 128;
-}
-
 .table-birthday-indicator {
 	position: absolute;
 	left: -10px;
@@ -1818,4 +1813,269 @@ If your plugin does not need CSS, delete this file.
 	font-size: var(--font-ui-small);
 	white-space: nowrap;
 	cursor: pointer;
+}
+
+/* ------------------------------------------------------------------ */
+/* Keep-in-touch goals, reach out, toggles                             */
+/* ------------------------------------------------------------------ */
+
+.friend-tracker-stat.is-warning {
+	background-color: rgba(var(--color-red-rgb), 0.15);
+	color: var(--color-red);
+}
+
+/* "Reach out today" suggestions below the stats */
+.friend-tracker-reach-out {
+	display: flex;
+	flex-wrap: wrap;
+	justify-content: center;
+	align-items: center;
+	gap: var(--size-4-1) var(--size-4-2);
+	font-size: var(--font-ui-smaller);
+}
+
+.friend-tracker-reach-out-label {
+	color: var(--text-muted);
+}
+
+.friend-tracker-reach-out-chip {
+	display: inline-flex;
+	align-items: center;
+	gap: var(--size-4-1);
+	height: auto;
+	padding: 2px var(--size-4-2);
+	border-radius: var(--radius-l);
+	background-color: var(--background-secondary);
+	border: 1px solid var(--background-modifier-border);
+	box-shadow: none;
+	color: var(--text-normal);
+	font-size: inherit;
+	cursor: pointer;
+}
+
+.friend-tracker-reach-out-chip:hover {
+	border-color: var(--interactive-accent);
+}
+
+.friend-tracker-reach-out-since {
+	color: var(--text-muted);
+}
+
+/* Toolbar toggles (deceased, selection) */
+.friend-tracker-deceased-toggle,
+.friend-tracker-select-toggle {
+	flex-shrink: 0;
+}
+
+.friend-tracker-deceased-toggle.is-active,
+.friend-tracker-select-toggle.is-active {
+	color: var(--text-accent);
+	background-color: var(--background-modifier-hover);
+}
+
+/* ------------------------------------------------------------------ */
+/* Selection mode                                                      */
+/* ------------------------------------------------------------------ */
+
+.friend-tracker-bulk-bar {
+	flex-basis: 100%;
+	display: flex;
+	flex-wrap: wrap;
+	align-items: center;
+	gap: var(--size-4-2);
+	padding: var(--size-4-2) var(--size-4-3);
+	border-radius: var(--radius-m);
+	background-color: var(--background-secondary);
+}
+
+.friend-tracker-bulk-count {
+	margin-right: auto;
+	color: var(--text-muted);
+	font-size: var(--font-ui-small);
+}
+
+.friend-tracker-bulk-action {
+	display: inline-flex;
+	align-items: center;
+	gap: var(--size-4-1);
+}
+
+.friend-tracker-bulk-action svg {
+	width: var(--icon-s);
+	height: var(--icon-s);
+}
+
+.friend-tracker-select {
+	margin: 0;
+	flex-shrink: 0;
+	cursor: pointer;
+}
+
+/* Checkbox and sort button side by side; the th itself stays a table cell */
+.friend-tracker-table th.has-select-all > * {
+	display: inline-flex;
+	vertical-align: middle;
+}
+
+.friend-tracker-table th.has-select-all .friend-tracker-select {
+	margin-right: var(--size-4-2);
+}
+
+.friend-tracker-name .friend-tracker-select {
+	margin-right: 0;
+}
+
+.friend-tracker-row.is-selected {
+	--friend-tracker-row-bg: color-mix(
+		in srgb,
+		var(--interactive-accent) 12%,
+		var(--background-primary)
+	);
+}
+
+/* ------------------------------------------------------------------ */
+/* Interaction types and daily notes                                   */
+/* ------------------------------------------------------------------ */
+
+.contact-interaction-meta {
+	display: flex;
+	gap: var(--size-4-2);
+	margin-bottom: var(--size-4-2);
+}
+
+.contact-interaction-meta .contact-interaction-date-input {
+	flex: 1;
+}
+
+.contact-quick-add-type {
+	flex-shrink: 0;
+	height: var(--input-height);
+}
+
+.contact-interaction-text {
+	display: flex;
+	align-items: baseline;
+	gap: var(--size-4-2);
+}
+
+.contact-interaction-type {
+	display: inline-flex;
+	align-self: center;
+	flex-shrink: 0;
+	color: var(--text-muted);
+}
+
+.contact-interaction-type svg {
+	width: var(--icon-s);
+	height: var(--icon-s);
+}
+
+.contact-interaction-daily-link {
+	color: var(--text-accent);
+	text-decoration: none;
+}
+
+.contact-interaction-daily-link:hover {
+	text-decoration: underline;
+}
+
+/* Notes linking to the contact */
+.contact-mentions {
+	margin-top: var(--size-4-6);
+	padding-top: var(--size-4-3);
+	border-top: 1px solid var(--background-modifier-border);
+}
+
+.contact-mentions h3 {
+	margin: 0 0 var(--size-4-2);
+	font-size: var(--font-ui-small);
+	color: var(--text-muted);
+	text-transform: uppercase;
+	letter-spacing: 0.05em;
+}
+
+.contact-mention {
+	display: flex;
+	justify-content: space-between;
+	gap: var(--size-4-2);
+	padding: var(--size-4-1) 0;
+}
+
+.contact-mention-date,
+.contact-mentions-more {
+	color: var(--text-faint);
+	font-size: var(--font-ui-smaller);
+}
+
+/* ------------------------------------------------------------------ */
+/* Connections                                                         */
+/* ------------------------------------------------------------------ */
+
+.contact-connections {
+	padding: 0 16px 12px;
+}
+
+.contact-connections-header {
+	display: flex;
+	align-items: center;
+	gap: var(--size-4-2);
+}
+
+.contact-connections-header h3 {
+	flex: 1;
+	margin: 0;
+	font-size: var(--font-ui-small);
+	color: var(--text-muted);
+	text-transform: uppercase;
+	letter-spacing: 0.05em;
+}
+
+.contact-connections-list {
+	display: flex;
+	flex-direction: column;
+	gap: var(--size-4-1);
+}
+
+.contact-connection {
+	display: flex;
+	align-items: center;
+	gap: var(--size-4-2);
+}
+
+.contact-connection-relation {
+	color: var(--text-muted);
+	min-width: 100px;
+}
+
+.contact-connection.is-incoming .contact-connection-relation {
+	min-width: 0;
+	font-size: var(--font-ui-smaller);
+	color: var(--text-faint);
+}
+
+.contact-connection-remove {
+	margin-left: auto;
+	opacity: 0;
+}
+
+.contact-connection:hover .contact-connection-remove,
+.contact-connection-remove:focus-visible {
+	opacity: 1;
+}
+
+@media (hover: none) {
+	.contact-connection-remove {
+		opacity: 1;
+	}
+}
+
+.contact-connections-empty {
+	color: var(--text-faint);
+	font-size: var(--font-ui-small);
+}
+
+/* "Contact every [ ] days" */
+.contact-field-suffix {
+	color: var(--text-muted);
+	margin-left: var(--size-4-2);
 }

@@ -1,6 +1,12 @@
-import { TFile } from "obsidian";
+import { TFile, stringifyYaml } from "obsidian";
 import type FriendTracker from "@/main";
-import type { ContactWithCountdown, Interaction } from "@/types";
+import type {
+	Connection,
+	ContactData,
+	ContactWithCountdown,
+	Interaction,
+} from "@/types";
+import { getContactFilePath, sanitizeFileName } from "@/utils/file";
 import { splitFrontmatter } from "@/utils/frontmatter";
 import {
 	daysBetween,
@@ -10,6 +16,33 @@ import {
 	pluralize,
 	toLocalISODate,
 } from "@/utils/date";
+
+/** Connections from the frontmatter, skipping malformed entries */
+export function parseConnections(value: unknown): Connection[] {
+	if (!Array.isArray(value)) return [];
+	return value
+		.filter(
+			(item): item is Connection =>
+				!!item &&
+				typeof item === "object" &&
+				typeof item.contact === "string" &&
+				!!item.contact.trim()
+		)
+		.map((item) => ({
+			contact: item.contact.trim(),
+			relation:
+				typeof item.relation === "string" ? item.relation.trim() : "",
+		}));
+}
+
+/** "[[Max Müller]]" or "[[Max Müller|Max]]" -> "Max Müller" */
+export function getLinkTarget(link: string): string {
+	return link
+		.replace(/^\[\[/, "")
+		.replace(/\]\]$/, "")
+		.split("|")[0]
+		.trim();
+}
 
 /**
  * The "deceased" field holds the date of death, or `true` when the date
@@ -84,6 +117,10 @@ export class ContactOperations {
 						),
 						deceased: death.deceased,
 						deathDate: death.date ? toLocalISODate(death.date) : "",
+						contactInterval: this.getContactInterval(
+							metadata.contact_interval
+						),
+						connections: parseConnections(metadata.connections),
 						file,
 					});
 				}
@@ -96,6 +133,21 @@ export class ContactOperations {
 		}
 
 		return contacts;
+	}
+
+	/**
+	 * "Keep in touch" goal in days: the contact's own value, otherwise the
+	 * default from the settings. null when there is no goal.
+	 */
+	public getContactInterval(value: unknown): number | null {
+		const own = Number(value);
+		if (value !== undefined && value !== null && value !== "") {
+			if (Number.isFinite(own) && own > 0) return Math.round(own);
+			// 0 or "none" switches the goal off for this contact
+			if (own === 0 || value === "none") return null;
+		}
+		const fallback = this.plugin.settings.defaultContactInterval;
+		return fallback > 0 ? fallback : null;
 	}
 
 	/** Age today, or at `until` (e.g. the date of death) */
@@ -193,6 +245,68 @@ export class ContactOperations {
 		}
 
 		return daysBetween(today, nextBirthday);
+	}
+
+	/**
+	 * Create a contact file from frontmatter data (must contain `name`).
+	 * Applies the "new contact" template from the settings.
+	 */
+	public async createContact(
+		data: Record<string, unknown>
+	): Promise<"created" | "exists" | "invalid-name"> {
+		const name = typeof data.name === "string" ? data.name.trim() : "";
+		if (!sanitizeFileName(name)) return "invalid-name";
+
+		const vault = this.plugin.app.vault;
+		const folder = this.plugin.settings.contactsFolder;
+		const filePath = getContactFilePath(folder, name);
+		if (vault.getAbstractFileByPath(filePath)) return "exists";
+
+		const frontmatter: Record<string, unknown> = { ...data, name };
+		const settings = this.plugin.settings;
+		for (const field of settings.newContactFields) {
+			if (!(field in frontmatter)) frontmatter[field] = "";
+		}
+		if (
+			settings.newContactNoteSections.length > 0 &&
+			!frontmatter.note_sections
+		) {
+			frontmatter.note_sections = settings.newContactNoteSections.map(
+				(title) => ({ title, text: "" })
+			);
+		}
+
+		if (!vault.getFolderByPath(folder)) {
+			await vault.createFolder(folder);
+		}
+		const yaml = stringifyYaml(frontmatter);
+		await vault.create(filePath, `---\n${yaml.trimEnd()}\n---\n`);
+		return "created";
+	}
+
+	/** Full frontmatter of every contact file */
+	public async getContactData(): Promise<
+		Array<{ file: TFile; data: ContactData }>
+	> {
+		const folder = this.plugin.app.vault.getFolderByPath(
+			this.plugin.settings.contactsFolder
+		);
+		if (!folder) return [];
+
+		const result: Array<{ file: TFile; data: ContactData }> = [];
+		for (const file of folder.children) {
+			if (!(file instanceof TFile) || file.extension !== "md") continue;
+			try {
+				const content = await this.plugin.app.vault.cachedRead(file);
+				const { frontmatter } = splitFrontmatter(content);
+				if (frontmatter) {
+					result.push({ file, data: frontmatter as ContactData });
+				}
+			} catch (error) {
+				console.error(`Error reading contact file ${file.path}:`, error);
+			}
+		}
+		return result;
 	}
 
 	/** Add an interaction to a contact file (newest first, like the profile) */

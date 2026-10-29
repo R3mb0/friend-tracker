@@ -1,16 +1,37 @@
 import { pluralize } from "@/utils/date";
 
-// "Last interaction" turns yellow, then red after this many days
-export const CONTACT_RECENT_DAYS = 30;
-export const CONTACT_OVERDUE_DAYS = 90;
+// Within this share of the contact goal the status turns yellow
+export const DUE_SOON_RATIO = 0.8;
 
 export type ContactStatus = "is-recent" | "is-due" | "is-overdue";
 
-/** Color class for the time since the last interaction */
-export function getContactStatus(daysSince: number): ContactStatus {
-	if (daysSince < CONTACT_RECENT_DAYS) return "is-recent";
-	if (daysSince < CONTACT_OVERDUE_DAYS) return "is-due";
-	return "is-overdue";
+/**
+ * Status relative to the "keep in touch" goal: green while well within it,
+ * yellow when it is nearly reached, red once it has passed. null without
+ * a goal.
+ */
+export function getContactStatus(
+	daysSince: number,
+	interval: number | null
+): ContactStatus | null {
+	if (!interval) return null;
+	if (daysSince >= interval) return "is-overdue";
+	if (daysSince >= interval * DUE_SOON_RATIO) return "is-due";
+	return "is-recent";
+}
+
+/**
+ * How urgent it is to get in touch: days since the last interaction
+ * relative to the goal (1 = goal reached). Contacts without any
+ * interaction count as due. null without a goal.
+ */
+export function getContactUrgency(
+	daysSince: number | null,
+	interval: number | null
+): number | null {
+	if (!interval) return null;
+	if (daysSince === null) return 1;
+	return daysSince / interval;
 }
 
 // Theme colors for relationship tags (see styles.css)

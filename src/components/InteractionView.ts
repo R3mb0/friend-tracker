@@ -1,6 +1,8 @@
 import { setIcon } from "obsidian";
 import type { ContactPageView } from "@/views/ContactPageView";
 import type { Interaction } from "@/types";
+import { getInteractionType } from "@/constants";
+import { getDailyNote } from "@/utils/dailyNotes";
 import { daysBetween, getToday, parseLocalDate } from "@/utils/date";
 
 // Longer lists get month headings
@@ -70,7 +72,23 @@ export class InteractionView {
 		const dateEl = interactionEl.createEl("div", {
 			cls: "contact-interaction-date",
 		});
-		dateEl.createDiv({ text: formattedDate });
+		// Link the date to the daily note of that day, if there is one
+		const dailyNote = getDailyNote(this.view.app, interaction.date);
+		if (dailyNote) {
+			const link = dateEl.createEl("a", {
+				cls: "contact-interaction-daily-link",
+				text: formattedDate,
+				href: "#",
+				attr: { "aria-label": `Open daily note ${dailyNote.basename}` },
+			});
+			// New tab, so the contact page stays open
+			link.addEventListener("click", (e) => {
+				e.preventDefault();
+				this.view.app.workspace.getLeaf("tab").openFile(dailyNote);
+			});
+		} else {
+			dateEl.createDiv({ text: formattedDate });
+		}
 		if (date) {
 			dateEl.createDiv({
 				cls: "contact-interaction-relative",
@@ -80,11 +98,19 @@ export class InteractionView {
 			});
 		}
 
-		// Text
-		interactionEl.createEl("div", {
+		// Text, with the type as icon in front
+		const textEl = interactionEl.createEl("div", {
 			cls: "contact-interaction-text",
-			text: interaction.text,
 		});
+		const type = getInteractionType(interaction.type);
+		if (type) {
+			const icon = textEl.createSpan({
+				cls: "contact-interaction-type",
+				attr: { "aria-label": type.label },
+			});
+			setIcon(icon, type.icon);
+		}
+		textEl.createSpan({ text: interaction.text });
 
 		// Actions
 		const actions = interactionEl.createEl("div", {

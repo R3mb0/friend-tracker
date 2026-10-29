@@ -6,6 +6,14 @@ export interface FriendTrackerSettings {
 	defaultSortDirection: "asc" | "desc";
 	relationshipTypes: string[];
 	defaultActiveTab: "notes" | "interactions" | "markdown";
+	/** Birthday notices on startup for birthdays within this many days */
+	birthdayReminderDays: number;
+	/** Default "keep in touch" goal in days; 0 = no goal */
+	defaultContactInterval: number;
+	showDeceased: boolean;
+	/** Template for new contacts */
+	newContactNoteSections: string[];
+	newContactFields: string[];
 }
 
 export interface Contact {
@@ -24,12 +32,15 @@ export interface ContactWithCountdown extends Contact {
 	deceased: boolean;
 	/** Date of death as "YYYY-MM-DD", "" if unknown or alive */
 	deathDate: string;
+	/** Effective "keep in touch" goal in days, null = none */
+	contactInterval: number | null;
+	connections: Connection[];
 }
 
 /** Columns the overview can be sorted by */
 export type SortColumn = Exclude<
 	keyof ContactWithCountdown,
-	"file" | "deceased" | "deathDate"
+	"file" | "deceased" | "deathDate" | "contactInterval" | "connections"
 >;
 
 export interface SortConfig {
@@ -37,9 +48,18 @@ export interface SortConfig {
 	direction: "asc" | "desc";
 }
 
+export type InteractionType = "meeting" | "call" | "video" | "message" | "other";
+
 export interface Interaction {
 	date: string;
 	text: string;
+	type?: InteractionType;
+}
+
+/** Link to another contact, e.g. { contact: "[[Max]]", relation: "partner" } */
+export interface Connection {
+	contact: string;
+	relation: string;
 }
 
 /** A user-defined notes block with its own heading, e.g. "Diet" */
@@ -59,6 +79,9 @@ export interface ContactData {
 	interactions?: Interaction[];
 	/** Date of death ("YYYY-MM-DD"), or true if the date is unknown */
 	deceased?: string | boolean;
+	/** "Keep in touch" goal in days, overrides the default */
+	contact_interval?: number;
+	connections?: Connection[];
 	[key: string]: unknown;
 }
 
@@ -68,4 +91,9 @@ export const DEFAULT_SETTINGS: FriendTrackerSettings = {
 	defaultSortDirection: "asc",
 	relationshipTypes: ["family", "friend", "colleague", "pet"],
 	defaultActiveTab: "notes",
+	birthdayReminderDays: 1,
+	defaultContactInterval: 30,
+	showDeceased: true,
+	newContactNoteSections: [],
+	newContactFields: [],
 };

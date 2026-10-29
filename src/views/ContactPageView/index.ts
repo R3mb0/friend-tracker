@@ -14,17 +14,32 @@ import type FriendTracker from "@/main";
 import { createRelationshipInput } from "@/components/ContactFields";
 import { createBirthdayInput } from "@/components/BirthdayInput";
 import { InteractionView } from "@/components/InteractionView";
-import type { ContactData, Interaction, NoteSection } from "@/types";
+import type {
+	ContactData,
+	Interaction,
+	InteractionType,
+	NoteSection,
+} from "@/types";
 import { AddFieldModal } from "@/modals/AddFieldModal";
 import { InteractionModal } from "@/modals/InteractionModal";
 import { DeleteContactModal } from "@/modals/DeleteContactModal";
 import { DeceasedModal } from "@/modals/DeceasedModal";
-import { parseDeceased } from "@/services/ContactOperations";
-import { SPECIAL_INPUT_FIELDS, STANDARD_FIELDS } from "@/constants";
+import { ConnectionModal } from "@/modals/ConnectionModal";
+import {
+	getLinkTarget,
+	parseConnections,
+	parseDeceased,
+} from "@/services/ContactOperations";
+import {
+	INTERACTION_TYPES,
+	SPECIAL_INPUT_FIELDS,
+	STANDARD_FIELDS,
+} from "@/constants";
 import { splitFrontmatter } from "@/utils/frontmatter";
 import {
 	parseBirthday,
 	parseLocalDate,
+	pluralize,
 	toLocalISODate,
 } from "@/utils/date";
 import { getContactFilePath, sanitizeFileName } from "@/utils/file";
@@ -69,9 +84,14 @@ const NON_CUSTOM_FIELDS: string[] = [
 	STANDARD_FIELDS.UPDATED,
 	STANDARD_FIELDS.EXTRAS,
 	STANDARD_FIELDS.DECEASED,
+	STANDARD_FIELDS.CONTACT_INTERVAL,
+	STANDARD_FIELDS.CONNECTIONS,
 	RELATIONSHIP_FIELD.key,
 	...DETAIL_FIELDS.map((field) => field.key),
 ];
+
+// Notes linking to the contact listed in the interactions tab
+const MAX_MENTIONS = 10;
 
 // Notes are saved this long after the last keystroke
 const NOTES_SAVE_DELAY = 1000;
@@ -101,6 +121,7 @@ export class ContactPageView extends ItemView {
 	private focusField: string | null = null;
 	private focusQuickAdd = false;
 	private focusNoteSection: number | null = null;
+	private quickAddType: InteractionType = "meeting";
 	private saveNotesDebounced: Debouncer<[], void>;
 
 	public getRelationshipTypes(): string[] {
@@ -260,6 +281,11 @@ export class ContactPageView extends ItemView {
 		});
 		this.renderInfoSection(infoSection);
 
+		const connections = container.createEl("div", {
+			cls: "contact-connections",
+		});
+		this.renderConnections(connections);
+
 		this.renderTabs(container);
 
 		// Content container for tab content
@@ -283,6 +309,13 @@ export class ContactPageView extends ItemView {
 	// ---------------------------------------------------------------------
 	// Header: name, relationship, key facts, trivia
 	// ---------------------------------------------------------------------
+
+	/** Effective "keep in touch" goal in days (own value or default) */
+	private get contactInterval(): number | null {
+		return this.plugin.contactOperations.getContactInterval(
+			this.contactData.contact_interval
+		);
+	}
 
 	private get death() {
 		return parseDeceased(this.contactData.deceased);
@@ -366,14 +399,22 @@ export class ContactPageView extends ItemView {
 			);
 		} else {
 			const ago = ops.formatDaysAgo(daysSince).toLowerCase();
+			// Colored relative to the "keep in touch" goal; no "overdue"
+			// warning for someone who has passed away
+			const status = death.deceased
+				? null
+				: getContactStatus(daysSince, this.contactInterval);
 			lastContact = addFact(
 				"message-circle",
 				`Last contact: ${ago}`,
-				// No "overdue" warning for someone who has passed away
-				death.deceased
-					? "is-muted"
-					: `is-status ${getContactStatus(daysSince)}`
+				status ? `is-status ${status}` : "is-muted"
 			);
+		}
+
+		// The goal itself, so it's clear what the color refers to
+		const interval = this.contactInterval;
+		if (interval && !death.deceased) {
+			addFact("repeat", `Every ${pluralize(interval, "day")}`);
 		}
 		// Jump to the interactions tab
 		lastContact.addClass("is-clickable");
@@ -829,6 +870,8 @@ export class ContactPageView extends ItemView {
 			);
 		}
 
+		this.createContactIntervalField(fieldsContainer);
+
 		// Custom fields with simple values; lists and nested values stay
 		// untouched (they can still be edited in the note itself)
 		for (const [key, value] of this.getCustomFields()) {
@@ -948,10 +991,263 @@ export class ContactPageView extends ItemView {
 		}
 	}
 
+	/** "Keep in touch every N days"; empty uses the default from settings */
+	private createContactIntervalField(container: HTMLElement) {
+		const key = STANDARD_FIELDS.CONTACT_INTERVAL;
+		const fieldContainer = container.createEl("div", {
+			cls: "contact-field",
+			attr: { "data-field": key },
+		});
+		fieldContainer.createEl("label", { text: "Contact every" });
+
+		const fallback = this.plugin.settings.defaultContactInterval;
+		const current = this.contactData[key];
+		const input = fieldContainer.createEl("input", {
+			cls: "contact-field-input",
+			attr: {
+				type: "number",
+				min: "0",
+				placeholder:
+					fallback > 0 ? `${fallback} (default)` : "No goal",
+				value: current == null ? "" : String(current),
+			},
+		});
+		fieldContainer.createSpan({
+			cls: "contact-field-suffix",
+			text: "days",
+		});
+
+		input.addEventListener("change", async () => {
+			const value = input.value.trim();
+			if (!value) {
+				await this.removeField(key);
+				return;
+			}
+			const days = Number(value);
+			if (!Number.isFinite(days)) return;
+			// 0 switches the goal off for this contact
+			this.contactData[key] = Math.max(0, Math.round(days));
+			await this.saveContactData();
+		});
+	}
+
 	private async removeField(field: string) {
 		delete this.contactData[field];
 		await this.saveContactData([field]);
 		this.rerenderInfo();
+	}
+
+	// ---------------------------------------------------------------------
+	// Connections to other contacts
+	// ---------------------------------------------------------------------
+
+	private async renderConnections(section: HTMLElement) {
+		const file = this._file;
+		if (!file) return;
+
+		const header = section.createDiv({ cls: "contact-connections-header" });
+		header.createEl("h3", { text: "Connections" });
+		const addButton = header.createEl("button", {
+			cls: "clickable-icon",
+			attr: { "aria-label": "Add connection" },
+		});
+		setIcon(addButton, "plus");
+		addButton.addEventListener("click", () => this.startAddConnection());
+
+		const list = section.createDiv({ cls: "contact-connections-list" });
+		const own = parseConnections(this.contactData.connections);
+		const linked = new Set<TFile>();
+
+		own.forEach((connection, index) => {
+			const target = this.resolveContactLink(connection.contact);
+			if (target) linked.add(target);
+			this.renderConnection(list, {
+				name: target?.basename ?? getLinkTarget(connection.contact),
+				relation: connection.relation,
+				target,
+				onRemove: () => this.removeConnection(index),
+			});
+		});
+
+		// Contacts that link here without a link back (read-only)
+		const contacts = await this.plugin.contactOperations.getContacts();
+		if (this._file !== file) return;
+		for (const other of contacts) {
+			if (other.file === file || linked.has(other.file)) continue;
+			const incoming = other.connections.find(
+				(connection) =>
+					this.resolveContactLink(connection.contact, other.file) ===
+					file
+			);
+			if (!incoming) continue;
+			this.renderConnection(list, {
+				name: other.name,
+				relation: incoming.relation
+					? `sees ${this.displayName} as ${incoming.relation}`
+					: "",
+				target: other.file,
+				incoming: true,
+			});
+		}
+
+		if (!list.hasChildNodes()) {
+			list.createDiv({
+				cls: "contact-connections-empty",
+				text: "No connections yet",
+			});
+		}
+	}
+
+	private renderConnection(
+		list: HTMLElement,
+		options: {
+			name: string;
+			relation: string;
+			target: TFile | null;
+			incoming?: boolean;
+			onRemove?: () => void;
+		}
+	) {
+		const item = list.createDiv({
+			cls: `contact-connection${options.incoming ? " is-incoming" : ""}`,
+		});
+		if (options.relation && !options.incoming) {
+			item.createSpan({
+				cls: "contact-connection-relation",
+				text: capitalize(options.relation),
+			});
+		}
+		const link = item.createEl("a", {
+			cls: "contact-connection-name",
+			text: options.name,
+			href: "#",
+		});
+		link.addEventListener("click", (e) => {
+			e.preventDefault();
+			this.openConnection(options.target, options.name);
+		});
+		if (options.relation && options.incoming) {
+			item.createSpan({
+				cls: "contact-connection-relation",
+				text: options.relation,
+			});
+		}
+		if (options.onRemove) {
+			const onRemove = options.onRemove;
+			const remove = item.createEl("button", {
+				cls: "clickable-icon contact-connection-remove",
+				attr: { "aria-label": `Remove connection to ${options.name}` },
+			});
+			setIcon(remove, "x");
+			remove.addEventListener("click", () => onRemove());
+		}
+	}
+
+	/** Resolve "[[Name]]" to a file, relative to `from` (default: this page) */
+	private resolveContactLink(
+		link: string,
+		from: TFile | null = this._file
+	): TFile | null {
+		return this.app.metadataCache.getFirstLinkpathDest(
+			getLinkTarget(link),
+			from?.path ?? ""
+		);
+	}
+
+	private openConnection(target: TFile | null, name: string) {
+		const folder = this.plugin.settings.contactsFolder;
+		if (target && target.path.startsWith(folder + "/")) {
+			this.plugin.openContact(target);
+		} else if (target) {
+			this.app.workspace.getLeaf("tab").openFile(target);
+		} else {
+			// Unknown link: let Obsidian handle it (it may create the note)
+			this.app.workspace.openLinkText(name, this._file?.path ?? "");
+		}
+	}
+
+	private startAddConnection() {
+		const file = this._file;
+		if (!file) return;
+		this.plugin.chooseContact("Connect with…", (other) => {
+			if (other.file === file) {
+				new Notice("A contact can't be connected to itself");
+				return;
+			}
+			new ConnectionModal(
+				this.app,
+				this.displayName,
+				other.name,
+				(relation, reverseRelation) =>
+					this.addConnection(other.file, relation, reverseRelation)
+			).open();
+		});
+	}
+
+	private async addConnection(
+		other: TFile,
+		relation: string,
+		reverseRelation: string
+	) {
+		const file = this._file;
+		if (!file) return;
+
+		const connections = parseConnections(this.contactData.connections);
+		const existing = connections.find(
+			(connection) => this.resolveContactLink(connection.contact) === other
+		);
+		if (existing) {
+			existing.relation = relation;
+		} else {
+			connections.push({ contact: `[[${other.basename}]]`, relation });
+		}
+		this.contactData.connections = connections;
+		await this.saveContactData();
+
+		// Optionally store the reverse direction in the other contact
+		if (reverseRelation) {
+			await this.app.fileManager.processFrontMatter(
+				other,
+				(frontmatter) => {
+					const theirs = parseConnections(frontmatter.connections);
+					const back = theirs.find(
+						(connection) =>
+							this.resolveContactLink(connection.contact, other) ===
+							file
+					);
+					if (back) {
+						back.relation = reverseRelation;
+					} else {
+						theirs.push({
+							contact: `[[${file.basename}]]`,
+							relation: reverseRelation,
+						});
+					}
+					frontmatter.connections = theirs;
+				}
+			);
+		}
+		this.render();
+	}
+
+	private async removeConnection(index: number) {
+		const connections = parseConnections(this.contactData.connections);
+		const [removed] = connections.splice(index, 1);
+		if (!removed) return;
+		this.contactData.connections = connections;
+		if (connections.length === 0) {
+			delete this.contactData.connections;
+			await this.saveContactData([STANDARD_FIELDS.CONNECTIONS]);
+		} else {
+			await this.saveContactData();
+		}
+		this.render();
+
+		this.showUndoNotice("Connection removed", () => {
+			const current = parseConnections(this.contactData.connections);
+			current.splice(Math.min(index, current.length), 0, removed);
+			this.contactData.connections = current;
+		});
 	}
 
 	// ---------------------------------------------------------------------
@@ -1364,6 +1660,20 @@ export class ContactPageView extends ItemView {
 		const quickAdd = interactions.createEl("form", {
 			cls: "contact-quick-add",
 		});
+
+		// Type of interaction, remembered while the page is open
+		const typeSelect = quickAdd.createEl("select", {
+			cls: "dropdown contact-quick-add-type",
+			attr: { "aria-label": "Type of interaction" },
+		});
+		for (const type of INTERACTION_TYPES) {
+			typeSelect.createEl("option", { text: type.label, value: type.id });
+		}
+		typeSelect.value = this.quickAddType;
+		typeSelect.addEventListener("change", () => {
+			this.quickAddType = typeSelect.value as InteractionType;
+		});
+
 		const quickInput = quickAdd.createEl("input", {
 			cls: "contact-quick-add-input",
 			attr: {
@@ -1388,7 +1698,11 @@ export class ContactPageView extends ItemView {
 			const text = quickInput.value.trim();
 			if (!text) return;
 			this.focusQuickAdd = true;
-			this.addInteraction(toLocalISODate(new Date()), text);
+			this.addInteraction({
+				date: toLocalISODate(new Date()),
+				text,
+				type: this.quickAddType,
+			});
 		});
 		datedButton.addEventListener("click", () => {
 			this.openAddInteractionModal();
@@ -1405,17 +1719,67 @@ export class ContactPageView extends ItemView {
 				cls: "section-helper-text",
 				text: "Log meaningful touchpoints like meetings, calls, or important conversations to help maintain strong relationships",
 			});
-			return;
+		} else {
+			this.interactionView.render(interactions, list);
 		}
 
-		this.interactionView.render(interactions, list);
+		this.renderMentions(interactions);
 	}
 
-	private async addInteraction(date: string, text: string) {
+	/**
+	 * Notes that link to this contact (e.g. "Had coffee with [[Anna]]" in a
+	 * daily note), newest first
+	 */
+	private renderMentions(container: HTMLElement) {
+		const file = this._file;
+		if (!file) return;
+
+		const resolved = this.app.metadataCache.resolvedLinks;
+		// Other contacts link here via connections; those aren't mentions
+		const contactsFolder = this.plugin.settings.contactsFolder + "/";
+		const sources = Object.keys(resolved)
+			.filter(
+				(path) =>
+					!path.startsWith(contactsFolder) && resolved[path][file.path]
+			)
+			.map((path) => this.app.vault.getFileByPath(path))
+			.filter((source): source is TFile => source !== null)
+			.sort((a, b) => b.stat.mtime - a.stat.mtime);
+		if (sources.length === 0) return;
+
+		const section = container.createDiv({ cls: "contact-mentions" });
+		section.createEl("h3", {
+			text: `Mentioned in ${pluralize(sources.length, "note")}`,
+		});
+		const list = section.createDiv({ cls: "contact-mentions-list" });
+		for (const source of sources.slice(0, MAX_MENTIONS)) {
+			const item = list.createDiv({ cls: "contact-mention" });
+			const link = item.createEl("a", {
+				text: source.basename,
+				href: "#",
+			});
+			link.addEventListener("click", (e) => {
+				e.preventDefault();
+				this.app.workspace.getLeaf("tab").openFile(source);
+			});
+			item.createSpan({
+				cls: "contact-mention-date",
+				text: new Date(source.stat.mtime).toLocaleDateString(),
+			});
+		}
+		if (sources.length > MAX_MENTIONS) {
+			section.createDiv({
+				cls: "contact-mentions-more",
+				text: `and ${sources.length - MAX_MENTIONS} more (see backlinks)`,
+			});
+		}
+	}
+
+	private async addInteraction(interaction: Interaction) {
 		if (!Array.isArray(this.contactData.interactions)) {
 			this.contactData.interactions = [];
 		}
-		this.contactData.interactions.push({ date, text });
+		this.contactData.interactions.push(interaction);
 		await this.saveContactData();
 		// Header (last contact) and tab count change too
 		this.render();
@@ -1571,8 +1935,8 @@ export class ContactPageView extends ItemView {
 		const modal = new InteractionModal(
 			this.app,
 			null,
-			(date: string, text: string) => {
-				this.addInteraction(date, text);
+			(interaction) => {
+				this.addInteraction(interaction);
 			}
 		);
 		modal.open();
@@ -1585,11 +1949,11 @@ export class ContactPageView extends ItemView {
 		const modal = new InteractionModal(
 			this.app,
 			interaction,
-			async (date: string, text: string) => {
+			async (updated) => {
 				if (!Array.isArray(this.contactData.interactions)) {
 					this.contactData.interactions = [];
 				}
-				this.contactData.interactions[index] = { date, text };
+				this.contactData.interactions[index] = updated;
 				await this.saveContactData();
 				this.render();
 			}

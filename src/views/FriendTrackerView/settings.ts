@@ -237,6 +237,85 @@ export class FriendTrackerSettingTab extends PluginSettingTab {
 				});
 		});
 
+		new Setting(containerEl).setName("Reminders").setHeading();
+
+		new Setting(containerEl)
+			.setName("Birthday reminders")
+			.setDesc(
+				"When Obsidian starts, show a notice for birthdays within this many days (0 = only today)"
+			)
+			.addText((text) => {
+				text.inputEl.type = "number";
+				text.inputEl.min = "0";
+				text.setValue(
+					String(this.plugin.settings.birthdayReminderDays)
+				).onChange(async (value) => {
+					const days = Number(value);
+					if (!Number.isFinite(days) || days < 0) return;
+					this.plugin.settings.birthdayReminderDays = Math.round(days);
+					await this.plugin.saveSettings();
+				});
+			});
+
+		new Setting(containerEl)
+			.setName("Keep in touch every")
+			.setDesc(
+				"Default goal in days for contacting someone. Contacts can override it in their details (0 = no goal)"
+			)
+			.addText((text) => {
+				text.inputEl.type = "number";
+				text.inputEl.min = "0";
+				text.setValue(
+					String(this.plugin.settings.defaultContactInterval)
+				).onChange(async (value) => {
+					const days = Number(value);
+					if (!Number.isFinite(days) || days < 0) return;
+					this.plugin.settings.defaultContactInterval =
+						Math.round(days);
+					await this.plugin.saveSettings();
+				});
+			});
+
+		new Setting(containerEl).setName("New contacts").setHeading();
+
+		new Setting(containerEl)
+			.setName("Note sections")
+			.setDesc(
+				"Comma-separated note sections every new contact starts with, e.g. Diet, Gift ideas"
+			)
+			.addText((text) =>
+				text
+					.setPlaceholder("Diet, Gift ideas")
+					.setValue(
+						this.plugin.settings.newContactNoteSections.join(", ")
+					)
+					.onChange(async (value) => {
+						this.plugin.settings.newContactNoteSections =
+							splitList(value);
+						await this.plugin.saveSettings();
+					})
+			);
+
+		new Setting(containerEl)
+			.setName("Custom fields")
+			.setDesc(
+				"Comma-separated custom fields every new contact starts with, e.g. instagram, company"
+			)
+			.addText((text) =>
+				text
+					.setPlaceholder("instagram, company")
+					.setValue(this.plugin.settings.newContactFields.join(", "))
+					.onChange(async (value) => {
+						// Field names are stored in lowercase like other fields
+						this.plugin.settings.newContactFields = splitList(
+							value
+						).map((field) => field.toLowerCase());
+						await this.plugin.saveSettings();
+					})
+			);
+
+		new Setting(containerEl).setName("Display").setHeading();
+
 		new Setting(containerEl)
 			.setName("Default tab")
 			.setDesc("Choose which tab opens by default")
@@ -256,4 +335,13 @@ export class FriendTrackerSettingTab extends PluginSettingTab {
 					);
 			});
 	}
+}
+
+/** "Diet, Gift ideas," -> ["Diet", "Gift ideas"], without duplicates */
+function splitList(value: string): string[] {
+	const items = value
+		.split(",")
+		.map((item) => item.trim())
+		.filter(Boolean);
+	return Array.from(new Set(items));
 }

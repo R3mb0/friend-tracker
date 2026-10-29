@@ -5,16 +5,24 @@ import type { ContactOperations } from "@/services/ContactOperations";
 import { parseBirthday, pluralize } from "@/utils/date";
 import {
 	createRelationshipTag,
+	DUE_SOON_RATIO,
 	formatCountdown,
 	getContactStatus,
+	getContactUrgency,
 } from "@/utils/display";
 
 type SortColumn = SortConfig["column"];
+
+// Number of contacts suggested under "Reach out today"
+const REACH_OUT_COUNT = 3;
 
 interface ContactRow {
 	row: HTMLTableRowElement;
 	searchText: string;
 	relationship: string;
+	deceased: boolean;
+	contact: ContactWithCountdown;
+	checkbox: HTMLInputElement | null;
 }
 
 export class TableView {
@@ -38,6 +46,9 @@ export class TableView {
 		this.rows = [];
 		this.noResultsEl = null;
 		this.searchInputEl = null;
+		this.bulkCountEl = null;
+		this.bulkButtons = [];
+		this.selectAllEl = null;
 
 		this.renderHeader(container, contacts);
 		const toolbar = this.renderToolbar(container, contacts);
@@ -113,6 +124,25 @@ export class TableView {
 			this.renderSearch(toolbar);
 			this.renderRelationshipFilter(toolbar, contacts);
 		}
+		if (contacts.some((contact) => contact.deceased)) {
+			this.renderDeceasedToggle(toolbar);
+		}
+		if (contacts.length > 0) {
+			const selectButton = toolbar.createEl("button", {
+				cls: "clickable-icon friend-tracker-select-toggle",
+				attr: {
+					"aria-label": this.view.selectionMode
+						? "Done selecting"
+						: "Select contacts",
+					"aria-pressed": String(this.view.selectionMode),
+				},
+			});
+			selectButton.toggleClass("is-active", this.view.selectionMode);
+			setIcon(selectButton, "list-checks");
+			selectButton.addEventListener("click", () =>
+				this.view.toggleSelectionMode()
+			);
+		}
 
 		const addButton = toolbar.createEl("button", {
 			cls: "friend-tracker-add-button mod-cta",
@@ -122,6 +152,10 @@ export class TableView {
 		addButton.addEventListener("click", () =>
 			this.view.openAddContactModal()
 		);
+
+		if (this.view.selectionMode && contacts.length > 0) {
+			this.renderBulkBar(toolbar);
+		}
 
 		return toolbar;
 	}
@@ -192,16 +226,45 @@ export class TableView {
 		dropdown.selectEl.setAttr("aria-label", "Filter by relationship");
 	}
 
-	/** Show only rows matching every search word and the relationship filter */
+	/** Toggle button to show or hide deceased contacts */
+	private renderDeceasedToggle(toolbar: HTMLElement) {
+		const button = toolbar.createEl("button", {
+			cls: "clickable-icon friend-tracker-deceased-toggle",
+		});
+		setIcon(button, "flower");
+		const update = () => {
+			const showing = this.view.showDeceased;
+			button.toggleClass("is-active", showing);
+			button.setAttr(
+				"aria-label",
+				showing ? "Hide deceased contacts" : "Show deceased contacts"
+			);
+			button.setAttr("aria-pressed", String(showing));
+		};
+		update();
+		button.addEventListener("click", async () => {
+			await this.view.setShowDeceased(!this.view.showDeceased);
+			update();
+			this.applyFilters();
+		});
+	}
+
+	/**
+	 * Show only rows matching every search word, the relationship filter
+	 * and the deceased toggle
+	 */
 	private applyFilters() {
 		const terms = normalizeForSearch(this.view.searchQuery)
 			.split(/\s+/)
 			.filter(Boolean);
 		const relationship = this.view.relationshipFilter;
+		const showDeceased = this.view.showDeceased;
 
 		let visibleCount = 0;
-		for (const { row, searchText, relationship: rowType } of this.rows) {
+		for (const { row, searchText, relationship: rowType, deceased } of this
+			.rows) {
 			const matches =
+				(showDeceased || !deceased) &&
 				(!relationship || rowType === relationship) &&
 				terms.every((term) => searchText.includes(term));
 			row.toggleClass("friend-tracker-row-hidden", !matches);
@@ -212,6 +275,7 @@ export class TableView {
 			"friend-tracker-row-hidden",
 			visibleCount > 0 || this.rows.length === 0
 		);
+		this.updateBulkBar();
 	}
 
 	private renderHeader(
@@ -228,9 +292,9 @@ export class TableView {
 
 		// At-a-glance summary below the title
 		const stats = header.createDiv({ cls: "friend-tracker-stats" });
-		const addStat = (icon: string, text: string, highlight = false) => {
+		const addStat = (icon: string, text: string, cls = "") => {
 			const stat = stats.createDiv({
-				cls: `friend-tracker-stat${highlight ? " is-highlighted" : ""}`,
+				cls: `friend-tracker-stat ${cls}`,
 			});
 			setIcon(stat.createSpan({ cls: "friend-tracker-stat-icon" }), icon);
 			stat.createSpan({ text });
@@ -244,24 +308,72 @@ export class TableView {
 			addStat(
 				"cake",
 				`${nextBirthday.name} ${formatCountdown(days)}`,
-				days <= 7
+				days <= 7 ? "is-highlighted" : ""
 			);
 		}
 
-		// Contact you haven't been in touch with for the longest time
-		const longestAgo = this.findMin(contacts, (c) =>
-			c.lastInteraction === null || c.deceased ? null : -c.lastInteraction
-		);
-		if (longestAgo && longestAgo.lastInteraction !== null) {
-			addStat(
-				"clock",
-				`${longestAgo.name}: ${this.contactOps.formatDaysAgo(
-					longestAgo.lastInteraction
-				)}`
+		// Who to get in touch with, measured against each contact's goal
+		const urgent = contacts
+			.filter((contact) => !contact.deceased)
+			.map((contact) => ({
+				contact,
+				urgency: getContactUrgency(
+					contact.lastInteraction,
+					contact.contactInterval
+				),
+			}))
+			.filter(
+				(entry): entry is { contact: ContactWithCountdown; urgency: number } =>
+					entry.urgency !== null && entry.urgency >= DUE_SOON_RATIO
+			)
+			.sort((a, b) => b.urgency - a.urgency);
+
+		const overdue = urgent.filter((entry) => entry.urgency >= 1).length;
+		if (overdue > 0) {
+			addStat("bell", `${overdue} overdue`, "is-warning");
+		}
+
+		if (urgent.length > 0) {
+			this.renderReachOut(
+				header,
+				urgent.slice(0, REACH_OUT_COUNT).map((entry) => entry.contact)
 			);
 		}
 
 		return header;
+	}
+
+	/** "Reach out today": the most overdue contacts, one click away */
+	private renderReachOut(
+		header: HTMLElement,
+		contacts: ContactWithCountdown[]
+	) {
+		const reachOut = header.createDiv({
+			cls: "friend-tracker-reach-out",
+		});
+		reachOut.createSpan({
+			cls: "friend-tracker-reach-out-label",
+			text: "Reach out today:",
+		});
+		for (const contact of contacts) {
+			const chip = reachOut.createEl("button", {
+				cls: "friend-tracker-reach-out-chip",
+				attr: { "aria-label": `Open ${contact.name}` },
+			});
+			chip.createSpan({ text: contact.name });
+			chip.createSpan({
+				cls: "friend-tracker-reach-out-since",
+				text:
+					contact.lastInteraction === null
+						? "never"
+						: this.contactOps
+								.formatDaysAgo(contact.lastInteraction)
+								.toLowerCase(),
+			});
+			chip.addEventListener("click", () =>
+				this.view.openContact(contact.file)
+			);
+		}
 	}
 
 	/** Contact with the smallest non-null value, or null */
@@ -308,6 +420,10 @@ export class TableView {
 		columns.forEach(({ key, label, cls }) => {
 			const th = headerRow.createEl("th", { cls });
 			if (key === "actions") return;
+			if (key === "name" && this.view.selectionMode) {
+				th.addClass("has-select-all");
+				this.renderSelectAll(th);
+			}
 
 			const isActive = sort.column === key;
 			if (isActive) {
@@ -353,20 +469,37 @@ export class TableView {
 					`${contact.name} ${contact.relationship}`
 				),
 				relationship: contact.relationship.trim().toLowerCase(),
+				deceased: contact.deceased,
+				contact,
+				checkbox: null,
 			});
+			const entry = this.rows[this.rows.length - 1];
 
-			// The whole row opens the contact
-			row.addEventListener("click", () =>
-				this.view.openContact(contact.file)
-			);
+			// The whole row opens the contact, or selects it in selection mode
+			const activate = () => {
+				if (this.view.selectionMode) this.toggleSelected(entry);
+				else this.view.openContact(contact.file);
+			};
+			row.addEventListener("click", activate);
 			row.addEventListener("keydown", (e) => {
 				if (e.key === "Enter" && e.target === row) {
 					e.preventDefault();
-					this.view.openContact(contact.file);
+					activate();
 				}
 			});
 
-			this.renderNameCell(row, contact);
+			entry.checkbox = this.renderNameCell(row, contact);
+			if (entry.checkbox) {
+				const checkbox = entry.checkbox;
+				checkbox.addEventListener("click", (e) => e.stopPropagation());
+				checkbox.addEventListener("change", () =>
+					this.setSelected(entry, checkbox.checked)
+				);
+				row.toggleClass(
+					"is-selected",
+					this.view.selected.has(contact.file.path)
+				);
+			}
 
 			const ageCell = row.createEl("td", {
 				cls: "friend-tracker-col-age is-numeric",
@@ -439,6 +572,18 @@ export class TableView {
 		const inner = cell.createDiv({ cls: "friend-tracker-name" });
 		const days = contact.daysUntilBirthday;
 
+		let checkbox: HTMLInputElement | null = null;
+		if (this.view.selectionMode) {
+			checkbox = inner.createEl("input", {
+				cls: "friend-tracker-select",
+				attr: {
+					type: "checkbox",
+					"aria-label": `Select ${contact.name}`,
+				},
+			});
+			checkbox.checked = this.view.selected.has(contact.file.path);
+		}
+
 		if (days === 0) {
 			inner.createSpan({
 				cls: "friend-tracker-birthday-marker is-today",
@@ -460,6 +605,118 @@ export class TableView {
 				attr: { "aria-label": "Deceased" },
 			});
 		}
+		return checkbox;
+	}
+
+	// ---------------------------------------------------------------------
+	// Selection mode (bulk actions)
+	// ---------------------------------------------------------------------
+
+	private setSelected(entry: ContactRow, selected: boolean) {
+		const path = entry.contact.file.path;
+		if (selected) this.view.selected.add(path);
+		else this.view.selected.delete(path);
+		if (entry.checkbox) entry.checkbox.checked = selected;
+		entry.row.toggleClass("is-selected", selected);
+		this.updateBulkBar();
+	}
+
+	private toggleSelected(entry: ContactRow) {
+		this.setSelected(
+			entry,
+			!this.view.selected.has(entry.contact.file.path)
+		);
+	}
+
+	/** Rows not hidden by search or filters */
+	private getVisibleRows(): ContactRow[] {
+		return this.rows.filter(
+			(entry) => !entry.row.hasClass("friend-tracker-row-hidden")
+		);
+	}
+
+	/** Contacts that are selected and currently visible */
+	private getSelectedContacts(): ContactWithCountdown[] {
+		return this.getVisibleRows()
+			.filter((entry) => this.view.selected.has(entry.contact.file.path))
+			.map((entry) => entry.contact);
+	}
+
+	private bulkCountEl: HTMLElement | null = null;
+	private bulkButtons: HTMLButtonElement[] = [];
+	private selectAllEl: HTMLInputElement | null = null;
+
+	/** Bar with the selection count and bulk actions */
+	private renderBulkBar(toolbar: HTMLElement) {
+		const bar = toolbar.createDiv({ cls: "friend-tracker-bulk-bar" });
+		this.bulkCountEl = bar.createSpan({ cls: "friend-tracker-bulk-count" });
+		this.bulkButtons = [];
+
+		const addAction = (
+			icon: string,
+			label: string,
+			onClick: (contacts: ContactWithCountdown[]) => void,
+			cls = ""
+		) => {
+			const button = bar.createEl("button", {
+				cls: `friend-tracker-bulk-action ${cls}`,
+			});
+			setIcon(button.createSpan(), icon);
+			button.createSpan({ text: label });
+			button.addEventListener("click", () =>
+				onClick(this.getSelectedContacts())
+			);
+			this.bulkButtons.push(button);
+		};
+
+		addAction("tag", "Set type", (contacts) =>
+			this.view.bulkSetRelationship(contacts)
+		);
+		addAction("calendar-plus", "Log interaction", (contacts) =>
+			this.view.bulkLogInteraction(contacts)
+		);
+		addAction(
+			"trash",
+			"Delete",
+			(contacts) => this.view.bulkDelete(contacts),
+			"mod-warning"
+		);
+
+		this.updateBulkBar();
+	}
+
+	private updateBulkBar() {
+		const count = this.getSelectedContacts().length;
+		this.bulkCountEl?.setText(
+			count > 0 ? `${count} selected` : "Select contacts"
+		);
+		for (const button of this.bulkButtons) button.disabled = count === 0;
+
+		// "Select all" reflects the visible rows
+		if (this.selectAllEl) {
+			const visible = this.getVisibleRows();
+			const selected = visible.filter((entry) =>
+				this.view.selected.has(entry.contact.file.path)
+			).length;
+			this.selectAllEl.checked =
+				visible.length > 0 && selected === visible.length;
+			this.selectAllEl.indeterminate =
+				selected > 0 && selected < visible.length;
+		}
+	}
+
+	private renderSelectAll(th: HTMLElement) {
+		const checkbox = th.createEl("input", {
+			cls: "friend-tracker-select",
+			attr: { type: "checkbox", "aria-label": "Select all" },
+		});
+		checkbox.addEventListener("click", (e) => e.stopPropagation());
+		checkbox.addEventListener("change", () => {
+			for (const entry of this.getVisibleRows()) {
+				this.setSelected(entry, checkbox.checked);
+			}
+		});
+		this.selectAllEl = checkbox;
 	}
 
 	private renderBirthdayCell(
@@ -492,7 +749,9 @@ export class TableView {
 		}
 
 		// Color by how long ago the last contact was (not for the deceased)
-		const status = contact.deceased ? "" : getContactStatus(days);
+		const status = contact.deceased
+			? ""
+			: getContactStatus(days, contact.contactInterval) ?? "";
 		const value = cell.createSpan({
 			cls: `friend-tracker-last-interaction ${status}`,
 		});
