@@ -1,4 +1,10 @@
-import { App, FuzzySuggestModal, TFile } from "obsidian";
+import {
+	App,
+	FuzzySuggestModal,
+	SuggestModal,
+	TFile,
+	prepareFuzzySearch,
+} from "obsidian";
 import type { ContactWithCountdown } from "@/types";
 
 /** Fuzzy search over all contacts, e.g. for commands */
@@ -51,5 +57,66 @@ export class FileSuggestModal extends FuzzySuggestModal<TFile> {
 
 	onChooseItem(file: TFile): void {
 		this.onChoose(file);
+	}
+}
+
+type PersonChoice =
+	| { kind: "contact"; contact: ContactWithCountdown }
+	| { kind: "create"; name: string };
+
+/**
+ * Pick an existing contact or, by typing a new name, create one.
+ * Used to add relatives.
+ */
+export class PersonPickerModal extends SuggestModal<PersonChoice> {
+	constructor(
+		app: App,
+		private contacts: ContactWithCountdown[],
+		private onChoose: (choice: PersonChoice) => void,
+		placeholder: string
+	) {
+		super(app);
+		this.setPlaceholder(placeholder);
+	}
+
+	getSuggestions(query: string): PersonChoice[] {
+		const search = prepareFuzzySearch(query.trim());
+		const matches = this.contacts
+			.map((contact) => ({ contact, match: search(contact.name) }))
+			.filter((entry) => !query.trim() || entry.match)
+			.sort((a, b) => (b.match?.score ?? 0) - (a.match?.score ?? 0))
+			.slice(0, 50)
+			.map(
+				(entry): PersonChoice => ({
+					kind: "contact",
+					contact: entry.contact,
+				})
+			);
+
+		// Offer to create the typed name unless it exists exactly
+		const name = query.trim();
+		const exists = this.contacts.some(
+			(contact) => contact.name.toLowerCase() === name.toLowerCase()
+		);
+		if (name && !exists) matches.push({ kind: "create", name });
+		return matches;
+	}
+
+	renderSuggestion(choice: PersonChoice, el: HTMLElement) {
+		if (choice.kind === "create") {
+			el.createDiv({ text: `Create new contact "${choice.name}"` });
+			return;
+		}
+		el.createDiv({ text: choice.contact.name });
+		if (choice.contact.relationship) {
+			el.createDiv({
+				cls: "suggestion-note",
+				text: choice.contact.relationship,
+			});
+		}
+	}
+
+	onChooseSuggestion(choice: PersonChoice) {
+		this.onChoose(choice);
 	}
 }

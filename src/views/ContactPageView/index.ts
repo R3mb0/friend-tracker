@@ -14,6 +14,11 @@ import type FriendTracker from "@/main";
 import { createRelationshipInput } from "@/components/ContactFields";
 import { createBirthdayInput } from "@/components/BirthdayInput";
 import {
+	createMiniNetworkState,
+	MiniNetworkState,
+	renderMiniNetwork,
+} from "@/components/MiniNetwork";
+import {
 	createRhythmInput,
 	formatRhythm,
 	RhythmModal,
@@ -31,6 +36,7 @@ import { DeleteContactModal } from "@/modals/DeleteContactModal";
 import { DeceasedModal } from "@/modals/DeceasedModal";
 import { ConnectionModal } from "@/modals/ConnectionModal";
 import { OrganizationModal } from "@/modals/OrganizationModal";
+import { FamilyGraph, formatLifeDates } from "@/services/family";
 import {
 	getLinkTarget,
 	parseConnections,
@@ -51,6 +57,7 @@ import {
 } from "@/utils/date";
 import { getContactFilePath, sanitizeFileName } from "@/utils/file";
 import {
+	createAddButton,
 	createRelationshipTag,
 	formatCountdown,
 	getChineseZodiac,
@@ -94,6 +101,8 @@ const NON_CUSTOM_FIELDS: string[] = [
 	STANDARD_FIELDS.CONTACT_INTERVAL,
 	STANDARD_FIELDS.CONNECTIONS,
 	STANDARD_FIELDS.ORGANIZATIONS,
+	STANDARD_FIELDS.PARENTS,
+	STANDARD_FIELDS.PARTNERS,
 	RELATIONSHIP_FIELD.key,
 	...DETAIL_FIELDS.map((field) => field.key),
 ];
@@ -130,6 +139,8 @@ export class ContactPageView extends ItemView {
 	private focusQuickAdd = false;
 	private focusNoteSection: number | null = null;
 	private quickAddType: InteractionType = "meeting";
+	// Kinds shown in the mini network; kept while the page is open
+	private networkState: MiniNetworkState = createMiniNetworkState();
 	private saveNotesDebounced: Debouncer<[], void>;
 
 	public getRelationshipTypes(): string[] {
@@ -288,6 +299,16 @@ export class ContactPageView extends ItemView {
 			cls: "contact-info-section",
 		});
 		this.renderInfoSection(infoSection);
+
+		const network = container.createEl("div", {
+			cls: "contact-connections contact-network",
+		});
+		renderMiniNetwork(network, this.plugin, this._file, this.networkState);
+
+		const family = container.createEl("div", {
+			cls: "contact-connections contact-family",
+		});
+		this.renderFamily(family);
 
 		const connections = container.createEl("div", {
 			cls: "contact-connections",
@@ -837,11 +858,9 @@ export class ContactPageView extends ItemView {
 		key: string,
 		label: string
 	) {
-		const placeholder = valueEl.createEl("button", {
-			cls: "contact-field-placeholder",
-			text: `Add ${label.toLowerCase()}`,
-		});
-		placeholder.addEventListener("click", () => this.startEditing(key));
+		createAddButton(valueEl, `Add ${label.toLowerCase()}`, () =>
+			this.startEditing(key)
+		);
 	}
 
 	private addCopyButton(row: HTMLElement, value: string, label: string) {
@@ -1062,12 +1081,6 @@ export class ContactPageView extends ItemView {
 
 		const header = section.createDiv({ cls: "contact-connections-header" });
 		header.createEl("h3", { text: "Connections" });
-		const addButton = header.createEl("button", {
-			cls: "clickable-icon",
-			attr: { "aria-label": "Add connection" },
-		});
-		setIcon(addButton, "plus");
-		addButton.addEventListener("click", () => this.startAddConnection());
 
 		const list = section.createDiv({ cls: "contact-connections-list" });
 		const own = parseConnections(this.contactData.connections);
@@ -1105,12 +1118,10 @@ export class ContactPageView extends ItemView {
 			});
 		}
 
-		if (!list.hasChildNodes()) {
-			list.createDiv({
-				cls: "contact-connections-empty",
-				text: "No connections yet",
-			});
-		}
+		// Same "+ Add …" chip as for empty fields and relatives
+		createAddButton(list.createDiv(), "Add connection", () =>
+			this.startAddConnection()
+		);
 	}
 
 	private renderConnection(
@@ -1170,18 +1181,156 @@ export class ContactPageView extends ItemView {
 	}
 
 	// ---------------------------------------------------------------------
+	// Family (parents, partners, siblings, children)
+	// ---------------------------------------------------------------------
+
+	private async renderFamily(section: HTMLElement) {
+		const file = this._file;
+		if (!file) return;
+
+		const header = section.createDiv({ cls: "contact-connections-header" });
+		header.createEl("h3", { text: "Family" });
+		const treeButton = header.createEl("button", {
+			cls: "clickable-icon",
+			attr: { "aria-label": "Show family tree" },
+		});
+		setIcon(treeButton, "network");
+		treeButton.addEventListener("click", () =>
+			this.plugin.openFamilyTree(file)
+		);
+
+		const body = section.createDiv({ cls: "contact-family-groups" });
+		const { graph, files } = await this.plugin.familyOperations.load();
+		if (this._file !== file) return;
+
+		const id = file.path;
+		const refresh = () => this.render();
+		const family = this.plugin.familyOperations;
+		const fileOf = (personId: string) => files.get(personId);
+
+		this.renderFamilyGroup(body, {
+			label: "Parents",
+			people: graph.parentsOf(id).map((personId) => ({ personId })),
+			graph,
+			fileOf,
+			onAdd: () => this.plugin.addRelative(file, "parent", refresh),
+			addLabel: "Add parent",
+			onRemove: async (other) => {
+				await family.removeParent(file, other);
+				refresh();
+			},
+		});
+		this.renderFamilyGroup(body, {
+			label: "Partners",
+			people: graph.partnersOf(id).map((personId) => ({ personId })),
+			graph,
+			fileOf,
+			onAdd: () => this.plugin.addRelative(file, "partner", refresh),
+			addLabel: "Add partner",
+			onRemove: async (other) => {
+				await family.removePartner(file, other);
+				refresh();
+			},
+		});
+		const siblings = graph.siblingsOf(id);
+		if (siblings.length > 0) {
+			this.renderFamilyGroup(body, {
+				label: "Siblings",
+				people: siblings.map((sibling) => ({
+					personId: sibling.id,
+					note: sibling.half ? "half" : "",
+				})),
+				graph,
+				fileOf,
+			});
+		}
+		this.renderFamilyGroup(body, {
+			label: "Children",
+			people: graph.childrenOf(id).map((personId) => ({ personId })),
+			graph,
+			fileOf,
+			onAdd: () => this.plugin.addRelative(file, "child", refresh),
+			addLabel: "Add child",
+			onRemove: async (other) => {
+				await family.removeParent(other, file);
+				refresh();
+			},
+		});
+	}
+
+	private renderFamilyGroup(
+		container: HTMLElement,
+		options: {
+			label: string;
+			people: Array<{ personId: string; note?: string }>;
+			graph: FamilyGraph;
+			fileOf: (id: string) => TFile | undefined;
+			onAdd?: () => void;
+			addLabel?: string;
+			onRemove?: (other: TFile) => void;
+		}
+	) {
+		const group = container.createDiv({ cls: "contact-family-group" });
+		group.createSpan({
+			cls: "contact-family-label",
+			text: options.label,
+		});
+		const list = group.createDiv({ cls: "contact-family-people" });
+
+		for (const { personId, note } of options.people) {
+			const person = options.graph.get(personId);
+			const other = options.fileOf(personId);
+			if (!person || !other) continue;
+
+			const chip = list.createDiv({ cls: "contact-family-person" });
+			if (person.deceased) chip.addClass("is-deceased");
+			const link = chip.createEl("a", {
+				text: person.name,
+				href: "#",
+			});
+			link.addEventListener("click", (e) => {
+				e.preventDefault();
+				this.plugin.openContact(other);
+			});
+			const details = [formatLifeDates(person), note]
+				.filter(Boolean)
+				.join(" · ");
+			if (details) {
+				chip.createSpan({
+					cls: "contact-family-dates",
+					text: details,
+				});
+			}
+			if (options.onRemove) {
+				const onRemove = options.onRemove;
+				const remove = chip.createEl("button", {
+					cls: "clickable-icon contact-connection-remove",
+					attr: { "aria-label": `Remove ${person.name}` },
+				});
+				setIcon(remove, "x");
+				remove.addEventListener("click", () => onRemove(other));
+			}
+		}
+
+		if (options.onAdd) {
+			const onAdd = options.onAdd;
+			// With people listed already, a compact "+" is enough
+			createAddButton(
+				list,
+				options.addLabel ?? "Add",
+				onAdd,
+				options.people.length > 0
+			);
+		}
+	}
+
+	// ---------------------------------------------------------------------
 	// Organizations (companies, clubs, ...)
 	// ---------------------------------------------------------------------
 
 	private renderOrganizations(section: HTMLElement) {
 		const header = section.createDiv({ cls: "contact-connections-header" });
 		header.createEl("h3", { text: "Organizations" });
-		const addButton = header.createEl("button", {
-			cls: "clickable-icon",
-			attr: { "aria-label": "Add organization" },
-		});
-		setIcon(addButton, "plus");
-		addButton.addEventListener("click", () => this.startAddOrganization());
 
 		const list = section.createDiv({ cls: "contact-connections-list" });
 		const memberships = parseMemberships(this.contactData.organizations);
@@ -1219,12 +1368,9 @@ export class ContactPageView extends ItemView {
 			);
 		});
 
-		if (memberships.length === 0) {
-			list.createDiv({
-				cls: "contact-connections-empty",
-				text: "No organizations yet",
-			});
-		}
+		createAddButton(list.createDiv(), "Add organization", () =>
+			this.startAddOrganization()
+		);
 	}
 
 	private startAddOrganization() {

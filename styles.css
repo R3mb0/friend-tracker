@@ -1522,20 +1522,6 @@ If your plugin does not need CSS, delete this file.
 	}
 }
 
-/* "Add phone" etc. for empty fields */
-.contact-field-placeholder {
-	all: unset;
-	cursor: pointer;
-	color: var(--text-faint);
-	font-style: italic;
-}
-
-.contact-field-placeholder:hover,
-.contact-field-placeholder:focus-visible {
-	color: var(--text-accent);
-	text-decoration: underline;
-}
-
 .contact-edit-details {
 	display: inline-flex;
 	align-items: center;
@@ -2148,15 +2134,20 @@ If your plugin does not need CSS, delete this file.
 	font-size: var(--font-ui-small);
 }
 
-.organization-member-role.is-empty {
-	color: var(--text-faint);
-	font-style: italic;
+/* "+ Add role" chip for members without a role, shown on hover */
+.organization-member-add-role {
 	opacity: 0;
 }
 
-.contact-connection:hover .organization-member-role.is-empty,
-.organization-member-role:focus-visible {
+.contact-connection:hover .organization-member-add-role,
+.organization-member-add-role:focus-visible {
 	opacity: 1;
+}
+
+@media (hover: none) {
+	.organization-member-add-role {
+		opacity: 1;
+	}
 }
 
 .organization-member-role:hover {
@@ -2269,4 +2260,527 @@ If your plugin does not need CSS, delete this file.
 .contact-quick-add + .contact-interactions-list,
 .contact-quick-add + .section-helper-text {
 	margin-top: var(--size-4-2);
+}
+
+/* ------------------------------------------------------------------ */
+/* Family section on the profile                                       */
+/* ------------------------------------------------------------------ */
+
+.contact-family-groups {
+	display: flex;
+	flex-direction: column;
+	gap: var(--size-4-2);
+}
+
+.contact-family-group {
+	display: flex;
+	align-items: baseline;
+	gap: var(--size-4-2);
+}
+
+.contact-family-label {
+	flex-shrink: 0;
+	width: 100px;
+	color: var(--text-muted);
+}
+
+.contact-family-people {
+	display: flex;
+	flex-wrap: wrap;
+	align-items: center;
+	gap: var(--size-4-1) var(--size-4-3);
+	min-width: 0;
+}
+
+.contact-family-person {
+	display: inline-flex;
+	align-items: center;
+	gap: var(--size-4-1);
+}
+
+.contact-family-person.is-deceased a {
+	color: var(--text-muted);
+}
+
+.contact-family-dates {
+	color: var(--text-faint);
+	font-size: var(--font-ui-smaller);
+}
+
+.contact-family-person .contact-connection-remove {
+	margin-left: 0;
+}
+
+.contact-family-person:hover .contact-connection-remove {
+	opacity: 1;
+}
+
+/* ------------------------------------------------------------------ */
+/* Family tree view                                                    */
+/* ------------------------------------------------------------------ */
+
+.friend-tracker-tree-container {
+	display: flex;
+	flex-direction: column;
+	height: 100%;
+	padding: 0 !important;
+	overflow: hidden !important;
+}
+
+.friend-tracker-tree-toolbar {
+	display: flex;
+	flex-wrap: wrap;
+	align-items: center;
+	gap: var(--size-4-3);
+	padding: var(--size-4-2) var(--size-4-4);
+	border-bottom: 1px solid var(--background-modifier-border);
+	flex-shrink: 0;
+}
+
+.friend-tracker-tree-toolbar h3 {
+	flex: 1;
+	margin: 0;
+	font-size: var(--font-ui-medium);
+}
+
+.friend-tracker-tree-generations {
+	display: inline-flex;
+	align-items: center;
+	gap: var(--size-4-1);
+	color: var(--text-muted);
+	font-size: var(--font-ui-small);
+}
+
+.friend-tracker-tree-viewport {
+	position: relative;
+	flex: 1;
+	overflow: hidden;
+	cursor: grab;
+	touch-action: none;
+	background-color: var(--background-primary);
+	background-image: radial-gradient(
+		var(--background-modifier-border) 1px,
+		transparent 1px
+	);
+	background-size: 20px 20px;
+}
+
+.friend-tracker-tree-viewport.is-dragging {
+	cursor: grabbing;
+}
+
+.friend-tracker-tree-canvas {
+	position: absolute;
+	top: 0;
+	left: 0;
+	transform-origin: 0 0;
+}
+
+.friend-tracker-tree-lines {
+	position: absolute;
+	top: 0;
+	left: 0;
+	overflow: visible;
+	pointer-events: none;
+}
+
+.friend-tracker-tree-lines polyline {
+	fill: none;
+	stroke: var(--text-faint);
+	stroke-width: 1.5;
+}
+
+.friend-tracker-tree-lines polyline.is-partner {
+	stroke: var(--interactive-accent);
+	stroke-width: 2;
+}
+
+.friend-tracker-tree-card {
+	position: absolute;
+	box-sizing: border-box;
+	display: flex;
+	flex-direction: column;
+	justify-content: center;
+	gap: 2px;
+	padding: var(--size-4-1) var(--size-4-3);
+	border: 1px solid var(--background-modifier-border);
+	border-radius: var(--radius-m);
+	background-color: var(--background-secondary);
+	cursor: pointer;
+	text-align: center;
+	user-select: none;
+}
+
+.friend-tracker-tree-card:hover,
+.friend-tracker-tree-card:focus-visible {
+	border-color: var(--interactive-accent);
+	outline: none;
+}
+
+.friend-tracker-tree-card.is-focus {
+	border: 2px solid var(--interactive-accent);
+	background-color: var(--background-primary);
+	cursor: default;
+}
+
+.friend-tracker-tree-card.is-deceased {
+	opacity: 0.75;
+}
+
+.friend-tracker-tree-name {
+	font-weight: var(--font-semibold);
+	white-space: nowrap;
+	overflow: hidden;
+	text-overflow: ellipsis;
+}
+
+.friend-tracker-tree-dates {
+	color: var(--text-muted);
+	font-size: var(--font-ui-smaller);
+}
+
+/* Buttons on the card: open profile and "+" for relatives (on hover) */
+.friend-tracker-tree-open,
+.friend-tracker-tree-add {
+	position: absolute;
+	display: flex;
+	align-items: center;
+	justify-content: center;
+	width: 22px;
+	height: 22px;
+	padding: 0;
+	border-radius: 50%;
+	border: 1px solid var(--background-modifier-border);
+	background-color: var(--background-primary);
+	color: var(--text-muted);
+	box-shadow: none;
+	opacity: 0;
+	transition: opacity 0.15s ease;
+	cursor: pointer;
+}
+
+.friend-tracker-tree-open svg,
+.friend-tracker-tree-add svg {
+	width: 12px;
+	height: 12px;
+}
+
+.friend-tracker-tree-card:hover > button,
+.friend-tracker-tree-card:focus-within > button {
+	opacity: 1;
+}
+
+@media (hover: none) {
+	.friend-tracker-tree-card > button {
+		opacity: 1;
+	}
+}
+
+.friend-tracker-tree-open:hover,
+.friend-tracker-tree-add:hover {
+	color: var(--text-on-accent);
+	background-color: var(--interactive-accent);
+	border-color: var(--interactive-accent);
+}
+
+.friend-tracker-tree-open {
+	top: 4px;
+	right: 4px;
+	border: none;
+	background: transparent;
+}
+
+.friend-tracker-tree-add.is-parent {
+	top: -11px;
+	left: calc(50% - 11px);
+}
+
+.friend-tracker-tree-add.is-child {
+	bottom: -11px;
+	left: calc(50% - 11px);
+}
+
+.friend-tracker-tree-add.is-partner {
+	right: -11px;
+	top: calc(50% - 11px);
+}
+
+.friend-tracker-tree-hint {
+	position: absolute;
+	left: 50%;
+	bottom: var(--size-4-4);
+	transform: translateX(-50%);
+	padding: var(--size-4-2) var(--size-4-3);
+	border-radius: var(--radius-m);
+	background-color: var(--background-secondary);
+	color: var(--text-muted);
+	font-size: var(--font-ui-small);
+	pointer-events: none;
+}
+
+/* ------------------------------------------------------------------ */
+/* "+ Add …" chips (empty fields, relatives)                           */
+/* ------------------------------------------------------------------ */
+
+.friend-tracker-add-chip {
+	display: inline-flex;
+	align-items: center;
+	gap: var(--size-4-1);
+	height: auto;
+	margin: 0;
+	padding: 2px var(--size-4-3) 2px var(--size-4-2);
+	border: 1px dashed var(--background-modifier-border-hover);
+	border-radius: 999px;
+	background-color: transparent;
+	box-shadow: none;
+	color: var(--text-muted);
+	font-size: var(--font-ui-smaller);
+	font-weight: var(--font-normal);
+	line-height: 1.6;
+	cursor: pointer;
+	transition: color 0.15s ease, background-color 0.15s ease,
+		border-color 0.15s ease;
+}
+
+.friend-tracker-add-chip:hover,
+.friend-tracker-add-chip:focus-visible {
+	border-style: solid;
+	border-color: var(--interactive-accent);
+	background-color: rgba(var(--interactive-accent-rgb), 0.1);
+	color: var(--text-accent);
+	outline: none;
+}
+
+.friend-tracker-add-chip-icon {
+	display: inline-flex;
+}
+
+.friend-tracker-add-chip-icon svg {
+	width: 12px;
+	height: 12px;
+	stroke-width: 2.5;
+}
+
+/* Icon-only variant next to already listed people */
+.friend-tracker-add-chip.is-compact {
+	justify-content: center;
+	width: 22px;
+	height: 22px;
+	padding: 0;
+}
+
+/* ------------------------------------------------------------------ */
+/* Relationship network (full view and mini view on profiles)          */
+/* ------------------------------------------------------------------ */
+
+.friend-tracker-net-lines {
+	position: absolute;
+	top: 0;
+	left: 0;
+	overflow: visible;
+	pointer-events: none;
+}
+
+.friend-tracker-net-lines line {
+	stroke-width: 1.5;
+	stroke: var(--text-faint);
+}
+
+.friend-tracker-net-lines line.is-family {
+	stroke: var(--interactive-accent);
+}
+
+.friend-tracker-net-lines line.is-connection {
+	stroke: var(--color-blue);
+	stroke-dasharray: 5 4;
+}
+
+.friend-tracker-net-lines line.is-organization {
+	stroke: var(--color-orange);
+}
+
+/* Relation labels with a halo in the background color */
+.friend-tracker-net-lines text {
+	font-size: 11px;
+	fill: var(--text-muted);
+	text-anchor: middle;
+	dominant-baseline: middle;
+	paint-order: stroke;
+	stroke: var(--background-primary);
+	stroke-width: 4px;
+	stroke-linejoin: round;
+}
+
+.friend-tracker-net-node {
+	position: absolute;
+	transform: translate(-50%, -50%);
+	display: inline-flex;
+	align-items: center;
+	gap: var(--size-4-1);
+	max-width: 150px;
+	padding: 6px var(--size-4-3);
+	border: 1px solid var(--background-modifier-border);
+	border-radius: 999px;
+	background-color: var(--background-secondary);
+	cursor: pointer;
+	white-space: nowrap;
+	user-select: none;
+}
+
+.friend-tracker-net-node.is-organization {
+	border-radius: var(--radius-s);
+}
+
+.friend-tracker-net-node.is-via-family {
+	border-color: var(--interactive-accent);
+}
+
+.friend-tracker-net-node.is-via-connection {
+	border-color: var(--color-blue);
+}
+
+.friend-tracker-net-node.is-via-organization {
+	border-color: var(--color-orange);
+}
+
+.friend-tracker-net-node.is-center {
+	padding: 10px var(--size-4-4);
+	border: 2px solid var(--interactive-accent);
+	background-color: var(--background-primary);
+	font-weight: var(--font-semibold);
+	cursor: default;
+}
+
+.friend-tracker-net-node.is-deceased {
+	opacity: 0.7;
+}
+
+.friend-tracker-net-node:hover,
+.friend-tracker-net-node:focus-visible {
+	outline: none;
+	box-shadow: 0 0 0 2px var(--background-modifier-border-hover);
+}
+
+.friend-tracker-net-name {
+	overflow: hidden;
+	text-overflow: ellipsis;
+}
+
+.friend-tracker-net-icon {
+	display: inline-flex;
+	color: var(--color-orange);
+}
+
+.friend-tracker-net-icon svg {
+	width: 14px;
+	height: 14px;
+}
+
+/* "Open profile" icon, visible on hover */
+.friend-tracker-net-open {
+	display: inline-flex;
+	align-items: center;
+	justify-content: center;
+	width: 18px;
+	height: 18px;
+	padding: 0;
+	margin-right: -4px;
+	border: none;
+	background: transparent;
+	box-shadow: none;
+	color: var(--text-muted);
+	opacity: 0;
+	cursor: pointer;
+}
+
+.friend-tracker-net-open svg {
+	width: 12px;
+	height: 12px;
+}
+
+.friend-tracker-net-node:hover .friend-tracker-net-open,
+.friend-tracker-net-node:focus-within .friend-tracker-net-open {
+	opacity: 1;
+}
+
+@media (hover: none) {
+	.friend-tracker-net-open {
+		opacity: 1;
+	}
+}
+
+/* Filter toggles: Family / Connections / Organizations */
+.friend-tracker-net-filter {
+	display: flex;
+	flex-wrap: wrap;
+	gap: var(--size-4-1);
+}
+
+.friend-tracker-net-toggle {
+	display: inline-flex;
+	align-items: center;
+	gap: var(--size-4-1);
+	height: auto;
+	padding: 2px var(--size-4-2);
+	border: 1px solid var(--background-modifier-border);
+	border-radius: 999px;
+	background-color: transparent;
+	box-shadow: none;
+	color: var(--text-faint);
+	font-size: var(--font-ui-smaller);
+	cursor: pointer;
+}
+
+.friend-tracker-net-toggle-icon {
+	display: inline-flex;
+}
+
+.friend-tracker-net-toggle-icon svg {
+	width: 12px;
+	height: 12px;
+}
+
+.friend-tracker-net-toggle.is-active {
+	color: var(--text-normal);
+}
+
+.friend-tracker-net-toggle.is-active.is-family {
+	border-color: var(--interactive-accent);
+	background-color: rgba(var(--interactive-accent-rgb), 0.12);
+}
+
+.friend-tracker-net-toggle.is-active.is-connection {
+	border-color: var(--color-blue);
+	background-color: rgba(var(--color-blue-rgb), 0.12);
+}
+
+.friend-tracker-net-toggle.is-active.is-organization {
+	border-color: var(--color-orange);
+	background-color: rgba(var(--color-orange-rgb), 0.12);
+}
+
+/* Mini network box on profile pages */
+.contact-network .friend-tracker-net-filter {
+	margin-bottom: var(--size-4-2);
+}
+
+.friend-tracker-mini-net {
+	position: relative;
+	height: 260px;
+	overflow: hidden;
+	border: 1px solid var(--background-modifier-border);
+	border-radius: var(--radius-m);
+	background-color: var(--background-primary);
+	background-image: radial-gradient(
+		var(--background-modifier-border) 1px,
+		transparent 1px
+	);
+	background-size: 20px 20px;
+}
+
+.friend-tracker-mini-net.is-empty {
+	display: flex;
+	align-items: center;
+	justify-content: center;
+	height: 80px;
 }

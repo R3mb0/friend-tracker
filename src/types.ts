@@ -94,6 +94,10 @@ export interface ContactData {
 	contact_interval?: number;
 	connections?: Connection[];
 	organizations?: Membership[];
+	/** Links to the parents, e.g. ["[[Maria]]", "[[Peter]]"] */
+	parents?: string[];
+	/** Links to partners (stored on both sides) */
+	partners?: string[];
 	[key: string]: unknown;
 }
 

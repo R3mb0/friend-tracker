@@ -22,12 +22,22 @@ import { AddContactModal } from "@/modals/AddContactModal";
 import {
 	ContactSuggestModal,
 	FileSuggestModal,
+	PersonPickerModal,
 } from "@/modals/ContactSuggestModal";
+import { getContactFilePath } from "@/utils/file";
 import {
 	OrganizationPageView,
 	VIEW_TYPE_ORGANIZATION_PAGE,
 } from "@/views/OrganizationPageView";
 import { InteractionModal } from "@/modals/InteractionModal";
+import { ConfirmModal } from "@/modals/BulkModals";
+import { FamilyOperations } from "@/services/FamilyOperations";
+import { NetworkOperations } from "@/services/NetworkOperations";
+import { NetworkView, VIEW_TYPE_NETWORK } from "@/views/NetworkView";
+import {
+	FamilyTreeView,
+	VIEW_TYPE_FAMILY_TREE,
+} from "@/views/FamilyTreeView";
 import { buildVCards, parseVCards, VCardContact } from "@/services/vcard";
 
 // Target of the vCard export, relative to the vault root
@@ -36,10 +46,14 @@ const VCARD_EXPORT_FILE = "Friend Tracker contacts.vcf";
 export default class FriendTracker extends Plugin {
 	settings: FriendTrackerSettings;
 	public contactOperations: ContactOperations;
+	public familyOperations: FamilyOperations;
+	public networkOperations: NetworkOperations;
 
 	async onload() {
 		await this.loadSettings();
 		this.contactOperations = new ContactOperations(this);
+		this.familyOperations = new FamilyOperations(this);
+		this.networkOperations = new NetworkOperations(this);
 
 		// On mobile, we should wait for layout-ready
 		this.app.workspace.onLayoutReady(() => {
@@ -63,6 +77,16 @@ export default class FriendTracker extends Plugin {
 			this.registerView(
 				VIEW_TYPE_ORGANIZATION_PAGE,
 				(leaf) => new OrganizationPageView(leaf, this)
+			);
+
+			this.registerView(
+				VIEW_TYPE_FAMILY_TREE,
+				(leaf) => new FamilyTreeView(leaf, this)
+			);
+
+			this.registerView(
+				VIEW_TYPE_NETWORK,
+				(leaf) => new NetworkView(leaf, this)
 			);
 
 			// Add ribbon icon
@@ -167,6 +191,24 @@ export default class FriendTracker extends Plugin {
 		});
 
 		this.addCommand({
+			id: "open-network",
+			name: "Open relationship network…",
+			callback: () =>
+				this.chooseContact("Network of…", (contact) =>
+					this.openNetwork(contact.file)
+				),
+		});
+
+		this.addCommand({
+			id: "open-family-tree",
+			name: "Open family tree…",
+			callback: () =>
+				this.chooseContact("Family tree of…", (contact) =>
+					this.openFamilyTree(contact.file)
+				),
+		});
+
+		this.addCommand({
 			id: "open-organization",
 			name: "Open organization…",
 			callback: () => {
@@ -188,6 +230,27 @@ export default class FriendTracker extends Plugin {
 			id: "export-vcard",
 			name: "Export contacts as vCard",
 			callback: () => this.exportVCards(),
+		});
+
+		this.addCommand({
+			id: "convert-family-connections",
+			name: "Convert family connections to family tree",
+			callback: () =>
+				new ConfirmModal(
+					this.app,
+					"Convert family connections?",
+					"Connections like parent, child, partner or spouse become parents and partners for the family tree. The converted connections are removed.",
+					"Convert",
+					async () => {
+						const { converted, skipped } =
+							await this.familyOperations.convertConnections();
+						new Notice(
+							skipped > 0
+								? `Converted ${converted} connections, ${skipped} skipped (would create a loop)`
+								: `Converted ${converted} connections`
+						);
+					}
+				).open(),
 		});
 
 		this.addCommand({
@@ -298,6 +361,71 @@ export default class FriendTracker extends Plugin {
 		input.click();
 	}
 
+	/**
+	 * Pick (or create) a person and add them as parent, partner or child
+	 * of `file`. Calls `onDone` after a successful change.
+	 */
+	async addRelative(
+		file: TFile,
+		kind: "parent" | "partner" | "child",
+		onDone?: () => void
+	) {
+		const contacts = (await this.contactOperations.getContacts())
+			.filter((contact) => contact.file !== file)
+			.sort((a, b) => a.name.localeCompare(b.name));
+
+		const placeholder = {
+			parent: `Parent of ${file.basename}…`,
+			partner: `Partner of ${file.basename}…`,
+			child: `Child of ${file.basename}…`,
+		}[kind];
+
+		new PersonPickerModal(
+			this.app,
+			contacts,
+			async (choice) => {
+				let other: TFile | null;
+				if (choice.kind === "contact") {
+					other = choice.contact.file;
+				} else {
+					other = await this.createContactFile(choice.name);
+					if (!other) return;
+				}
+
+				const family = this.familyOperations;
+				let problem: string | null;
+				if (kind === "parent") problem = await family.addParent(file, other);
+				else if (kind === "child") problem = await family.addParent(other, file);
+				else problem = await family.addPartner(file, other);
+
+				if (problem) {
+					new Notice(problem);
+					return;
+				}
+				onDone?.();
+			},
+			placeholder
+		).open();
+	}
+
+	/** Create a contact with just a name; returns its file */
+	private async createContactFile(name: string): Promise<TFile | null> {
+		try {
+			const result = await this.contactOperations.createContact({ name });
+			if (result === "invalid-name") {
+				new Notice("Please enter a name with valid characters");
+				return null;
+			}
+			// "exists" is fine too: then the existing contact is used
+			const path = getContactFilePath(this.settings.contactsFolder, name);
+			return this.app.vault.getFileByPath(path);
+		} catch (error) {
+			console.error("Error creating contact:", error);
+			new Notice(`Could not create contact: ${error}`);
+			return null;
+		}
+	}
+
 	/** Let the user pick a contact via fuzzy search */
 	async chooseContact(
 		placeholder: string,
@@ -313,6 +441,32 @@ export default class FriendTracker extends Plugin {
 	}
 
 	/** Open a contact page, reusing an open one */
+	/** Open the relationship network of a contact or organization */
+	async openNetwork(file: TFile) {
+		const leaves = this.app.workspace.getLeavesOfType(VIEW_TYPE_NETWORK);
+		const leaf =
+			leaves.length > 0 ? leaves[0] : this.app.workspace.getLeaf("tab");
+		await leaf.setViewState({
+			type: VIEW_TYPE_NETWORK,
+			state: { filePath: file.path },
+		});
+		this.app.workspace.setActiveLeaf(leaf, { focus: true });
+		this.app.workspace.revealLeaf(leaf);
+	}
+
+	/** Open the family tree centered on a contact, reusing an open one */
+	async openFamilyTree(file: TFile) {
+		const leaves = this.app.workspace.getLeavesOfType(VIEW_TYPE_FAMILY_TREE);
+		const leaf =
+			leaves.length > 0 ? leaves[0] : this.app.workspace.getLeaf("tab");
+		await leaf.setViewState({
+			type: VIEW_TYPE_FAMILY_TREE,
+			state: { filePath: file.path },
+		});
+		this.app.workspace.setActiveLeaf(leaf, { focus: true });
+		this.app.workspace.revealLeaf(leaf);
+	}
+
 	/** Open an organization's profile page, reusing an open one */
 	async openOrganization(file: TFile) {
 		const leaves = this.app.workspace.getLeavesOfType(

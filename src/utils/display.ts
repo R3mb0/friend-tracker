@@ -1,3 +1,4 @@
+import { setIcon } from "obsidian";
 import { pluralize } from "@/utils/date";
 
 // Within this share of the contact goal the status turns yellow
@@ -108,4 +109,32 @@ export function getChineseZodiac(date: Date): string {
 		// Without Chinese calendar support fall back to the Gregorian year
 	}
 	return CHINESE_ZODIAC[(((year - 4) % 12) + 12) % 12];
+}
+
+/**
+ * Small "+ Add …" button for empty values and relatives. With
+ * `compact`, only the icon is shown (the label becomes the tooltip).
+ */
+export function createAddButton(
+	container: HTMLElement,
+	label: string,
+	onClick: () => void,
+	compact = false
+): HTMLButtonElement {
+	const button = container.createEl("button", {
+		cls: `friend-tracker-add-chip${compact ? " is-compact" : ""}`,
+		attr: { type: "button" },
+	});
+	setIcon(
+		button.createSpan({ cls: "friend-tracker-add-chip-icon" }),
+		"plus"
+	);
+	// Visible text, or a tooltip when only the icon is shown
+	if (compact) button.setAttr("aria-label", label);
+	else button.createSpan({ text: label });
+	button.addEventListener("click", (e) => {
+		e.stopPropagation();
+		onClick();
+	});
+	return button;
 }

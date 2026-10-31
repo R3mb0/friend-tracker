@@ -21,6 +21,17 @@ The format follows [Keep a Changelog](https://keepachangelog.com/en/1.1.0/).
 **Connections between contacts**
 - Link contacts with a relation (e.g. "Max is Anna's brother"), optionally with the reverse direction stored in the other contact. Contacts that link to someone without a link back are shown too.
 
+**Family tree**
+- Parents and partners per contact (`parents`, `partners` as links); children and (half) siblings are derived. Partners are stored on both sides. Loops such as someone becoming their own ancestor are prevented.
+- "Family" section on the profile with parents, partners, siblings and children, including life dates. Add relatives from existing contacts or create new ones right away; remove them with ×.
+- Family tree view around a person: ancestors above, siblings and partners beside, descendants below (0–6 generations each way). Zoom with the mouse wheel, pan by dragging, "Fit to screen". Click a person to center them, use the icon to open their profile, and the "+" buttons on a card to add a parent, partner or child.
+- Command "Open family tree…", and "Convert family connections to family tree" to turn existing connections like parent, child or spouse into family links.
+
+**Relationship network**
+- Network view around a person or organization: family, connections and organizations arranged in a circle, with labels such as "brother", "partner" or "Engineer". Depth 2 also shows the links of the links. Family, connections and organizations can be shown or hidden separately. Zoom, pan, click to center a person or organization, icon to open their page.
+- Small network on every contact and organization page, with the same toggles; a click opens the person or organization, the expand button opens the full view.
+- Command "Open relationship network…".
+
 **Organizations**
 - Companies, clubs, schools etc. as their own notes in `FriendTracker/Organizations`. Add a contact to an organization with an optional role from the contact's page; new names create the note automatically.
 - Organization notes list their members (with role) via a `friend-tracker-members` code block.
@@ -122,5 +133,7 @@ The format follows [Keep a Changelog](https://keepachangelog.com/en/1.1.0/).
 - Pinned the `obsidian` API to 1.7.2, updated TypeScript to 5.4, and added ESLint with `npm run lint`.
 - Release workflow uses `actions/*@v4`, Node 20 and `npm ci`.
 - Shared helpers for dates (`src/utils/date.ts`), frontmatter (`src/utils/frontmatter.ts`), file names (`src/utils/file.ts`) and display (`src/utils/display.ts`).
-- New frontmatter fields: `contact_interval`, `connections`, `organizations`, and `type` on interactions.
+- New frontmatter fields: `contact_interval`, `connections`, `organizations`, `parents`, `partners`, and `type` on interactions.
+- Family graph and tree layout in `src/services/family.ts`, network graph and radial layout in `src/services/network.ts`, both free of Obsidian APIs.
+- Pan and zoom shared by the family tree and the network view (`src/components/PanZoom.ts`).
 - Contact creation lives in `ContactOperations.createContact` (used by the dialog and the vCard import). vCard handling is in `src/services/vcard.ts`, free of Obsidian APIs.

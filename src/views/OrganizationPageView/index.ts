@@ -11,10 +11,16 @@ import {
 } from "obsidian";
 import type FriendTracker from "@/main";
 import { ConfirmModal } from "@/modals/BulkModals";
+import {
+	createMiniNetworkState,
+	MiniNetworkState,
+	renderMiniNetwork,
+} from "@/components/MiniNetwork";
 import { RoleModal } from "@/modals/OrganizationModal";
 import { splitFrontmatter } from "@/utils/frontmatter";
 import { getContactFilePath, sanitizeFileName } from "@/utils/file";
 import { pluralize } from "@/utils/date";
+import { createAddButton } from "@/utils/display";
 
 export const VIEW_TYPE_ORGANIZATION_PAGE = "friend-tracker-organization-view";
 
@@ -54,6 +60,8 @@ export class OrganizationPageView extends ItemView {
 	private lastContent = "";
 	private pendingSaves = 0;
 	private editing = false;
+	// Kinds shown in the mini network; kept while the page is open
+	private networkState: MiniNetworkState = createMiniNetworkState();
 	private saveNotesDebounced: Debouncer<[], void>;
 	// Re-render when member contacts change
 	private scheduleRender: Debouncer<[], void>;
@@ -205,6 +213,14 @@ export class OrganizationPageView extends ItemView {
 
 		this.renderHeader(container, file, members);
 		this.renderDetails(container.createDiv({ cls: "contact-info-section" }));
+		renderMiniNetwork(
+			container.createDiv({
+				cls: "contact-connections contact-network",
+			}),
+			this.plugin,
+			file,
+			this.networkState
+		);
 		this.renderMembers(
 			container.createDiv({
 				cls: "contact-connections organization-members",
@@ -392,11 +408,7 @@ export class OrganizationPageView extends ItemView {
 			const valueEl = row.createDiv({ cls: "contact-field-value" });
 
 			if (!value) {
-				const placeholder = valueEl.createEl("button", {
-					cls: "contact-field-placeholder",
-					text: `Add ${field.label.toLowerCase()}`,
-				});
-				placeholder.addEventListener("click", () => {
+				createAddButton(valueEl, `Add ${field.label.toLowerCase()}`, () => {
 					this.editing = true;
 					this.renderDetails(section);
 				});
@@ -469,22 +481,8 @@ export class OrganizationPageView extends ItemView {
 		header.createEl("h3", {
 			text: `Members (${members.length})`,
 		});
-		const addButton = header.createEl("button", {
-			cls: "clickable-icon",
-			attr: { "aria-label": "Add member" },
-		});
-		setIcon(addButton, "user-plus");
-		addButton.addEventListener("click", () => this.addMember(file));
 
 		const list = section.createDiv({ cls: "contact-connections-list" });
-		if (members.length === 0) {
-			list.createDiv({
-				cls: "contact-connections-empty",
-				text: "No members yet",
-			});
-			return;
-		}
-
 		for (const member of members) {
 			const item = list.createDiv({ cls: "contact-connection" });
 			const link = item.createEl("a", {
@@ -497,13 +495,7 @@ export class OrganizationPageView extends ItemView {
 				this.plugin.openContact(member.file);
 			});
 
-			const role = item.createEl("button", {
-				cls: "organization-member-role",
-				text: member.role || "Add role",
-				attr: { "aria-label": `Edit role of ${member.name}` },
-			});
-			role.toggleClass("is-empty", !member.role);
-			role.addEventListener("click", () =>
+			const editRole = () =>
 				new RoleModal(
 					this.app,
 					`Role of ${member.name}`,
@@ -516,8 +508,22 @@ export class OrganizationPageView extends ItemView {
 						);
 						this.render();
 					}
-				).open()
-			);
+				).open();
+
+			if (member.role) {
+				// The role itself is clickable to change it
+				const role = item.createEl("button", {
+					cls: "organization-member-role",
+					text: member.role,
+					attr: { "aria-label": `Edit role of ${member.name}` },
+				});
+				role.addEventListener("click", editRole);
+			} else {
+				// Same "+ Add …" chip as elsewhere, shown on hover
+				createAddButton(item, "Add role", editRole).addClass(
+					"organization-member-add-role"
+				);
+			}
 
 			const remove = item.createEl("button", {
 				cls: "clickable-icon contact-connection-remove",
@@ -533,6 +539,11 @@ export class OrganizationPageView extends ItemView {
 				new Notice(`${member.name} removed from ${file.basename}`);
 			});
 		}
+
+		// Same "+ Add …" chip as for empty fields and relatives
+		createAddButton(list.createDiv(), "Add member", () =>
+			this.addMember(file)
+		);
 	}
 
 	private addMember(file: TFile) {
