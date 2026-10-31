@@ -23,7 +23,7 @@ The format follows [Keep a Changelog](https://keepachangelog.com/en/1.1.0/).
 
 **Family tree**
 - Parents and partners per contact (`parents`, `partners` as links); children and (half) siblings are derived. Partners are stored on both sides. Loops such as someone becoming their own ancestor are prevented.
-- "Family" section on the profile with parents, partners, siblings and children, including life dates. Add relatives from existing contacts or create new ones right away; remove them with ×.
+- "Family" section on the profile with an optional small hierarchical tree (toggle in the section header, off by default; parents, the person with partners and siblings, children; drag to see wide families) and lists of parents, partners, siblings and children, including life dates. Add relatives from existing contacts or create new ones right away; remove them with ×.
 - Family tree view around a person: ancestors above, siblings and partners beside, descendants below (0–6 generations each way). Zoom with the mouse wheel, pan by dragging, "Fit to screen". Click a person to center them, use the icon to open their profile, and the "+" buttons on a card to add a parent, partner or child.
 - Command "Open family tree…", and "Convert family connections to family tree" to turn existing connections like parent, child or spouse into family links.
 

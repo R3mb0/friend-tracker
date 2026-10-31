@@ -22,7 +22,9 @@ export class PanZoom {
 	constructor(
 		private viewport: HTMLElement,
 		private canvas: HTMLElement,
-		private state: PanZoomState
+		private state: PanZoomState,
+		/** false: drag only, the mouse wheel keeps scrolling the page */
+		private wheelZoom = true
 	) {
 		this.attach();
 		this.apply();
@@ -72,6 +74,8 @@ export class PanZoom {
 		};
 		viewport.addEventListener("pointerup", stop);
 		viewport.addEventListener("pointercancel", stop);
+
+		if (!this.wheelZoom) return;
 
 		// Zoom around the mouse position
 		viewport.addEventListener(

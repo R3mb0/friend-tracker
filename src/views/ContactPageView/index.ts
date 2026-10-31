@@ -36,7 +36,13 @@ import { DeleteContactModal } from "@/modals/DeleteContactModal";
 import { DeceasedModal } from "@/modals/DeceasedModal";
 import { ConnectionModal } from "@/modals/ConnectionModal";
 import { OrganizationModal } from "@/modals/OrganizationModal";
-import { FamilyGraph, formatLifeDates } from "@/services/family";
+import {
+	FamilyGraph,
+	formatLifeDates,
+	layoutFamilyTree,
+} from "@/services/family";
+import { renderFamilyTree } from "@/components/FamilyTreeRenderer";
+import { PanZoom } from "@/components/PanZoom";
 import {
 	getLinkTarget,
 	parseConnections,
@@ -106,6 +112,12 @@ const NON_CUSTOM_FIELDS: string[] = [
 	RELATIONSHIP_FIELD.key,
 	...DETAIL_FIELDS.map((field) => field.key),
 ];
+
+// Generations above and below shown in the family mini tree; the full
+// tree view shows more
+const MINI_TREE_GENERATIONS = 1;
+// Smallest zoom of the mini tree, so names stay readable
+const MINI_TREE_MIN_SCALE = 0.6;
 
 // Notes linking to the contact listed in the interactions tab
 const MAX_MENTIONS = 10;
@@ -1190,9 +1202,26 @@ export class ContactPageView extends ItemView {
 
 		const header = section.createDiv({ cls: "contact-connections-header" });
 		header.createEl("h3", { text: "Family" });
+
+		// Show/hide the small tree here (remembered for all profiles)
+		const toggle = header.createEl("button", {
+			cls: "clickable-icon friend-tracker-mini-tree-toggle",
+		});
+		setIcon(toggle, "list-tree");
+		const updateToggle = () => {
+			const shown = this.plugin.settings.showFamilyMiniTree;
+			toggle.toggleClass("is-active", shown);
+			toggle.setAttr("aria-pressed", String(shown));
+			toggle.setAttr(
+				"aria-label",
+				shown ? "Hide family tree here" : "Show family tree here"
+			);
+		};
+		updateToggle();
+
 		const treeButton = header.createEl("button", {
 			cls: "clickable-icon",
-			attr: { "aria-label": "Show family tree" },
+			attr: { "aria-label": "Open full family tree" },
 		});
 		setIcon(treeButton, "network");
 		treeButton.addEventListener("click", () =>
@@ -1202,6 +1231,23 @@ export class ContactPageView extends ItemView {
 		const body = section.createDiv({ cls: "contact-family-groups" });
 		const { graph, files } = await this.plugin.familyOperations.load();
 		if (this._file !== file) return;
+
+		let treeBox: HTMLElement | null = null;
+		const showTree = () => {
+			treeBox = createDiv({ cls: "friend-tracker-mini-tree" });
+			section.insertBefore(treeBox, body);
+			this.renderMiniTree(treeBox, graph, files, file);
+		};
+		if (this.plugin.settings.showFamilyMiniTree) showTree();
+
+		toggle.addEventListener("click", async () => {
+			const show = !this.plugin.settings.showFamilyMiniTree;
+			this.plugin.settings.showFamilyMiniTree = show;
+			updateToggle();
+			if (show) showTree();
+			else treeBox?.remove();
+			await this.plugin.saveSettings();
+		});
 
 		const id = file.path;
 		const refresh = () => this.render();
@@ -1255,6 +1301,61 @@ export class ContactPageView extends ItemView {
 				await family.removeParent(other, file);
 				refresh();
 			},
+		});
+	}
+
+	/**
+	 * Small hierarchical tree (grandparents to grandchildren) above the
+	 * family lists. A click on a person opens their profile.
+	 */
+	private renderMiniTree(
+		box: HTMLElement,
+		graph: FamilyGraph,
+		files: Map<string, TFile>,
+		file: TFile
+	) {
+		const layout = layoutFamilyTree(graph, file.path, {
+			generationsUp: MINI_TREE_GENERATIONS,
+			generationsDown: MINI_TREE_GENERATIONS,
+		});
+		// Nothing to draw without relatives; the lists offer "+ Add …"
+		if (layout.nodes.length <= 1) {
+			box.remove();
+			return;
+		}
+
+		const canvas = box.createDiv({ cls: "friend-tracker-tree-canvas" });
+		// Drag to see wide families; the wheel keeps scrolling the page
+		const state = { scale: 1, x: 0, y: 0 };
+		const panZoom = new PanZoom(box, canvas, state, false);
+		renderFamilyTree(canvas, layout, graph, files, {
+			onCardClick: (target) => {
+				if (panZoom.wasDragged) return;
+				if (target !== file) this.plugin.openContact(target);
+			},
+		});
+
+		// Fit the tree, but never smaller than readable; the box takes the
+		// height the tree needs
+		requestAnimationFrame(() => {
+			const padding = 12;
+			state.scale = Math.max(
+				MINI_TREE_MIN_SCALE,
+				Math.min(1, (box.clientWidth - padding * 2) / layout.width)
+			);
+			box.style.height = `${layout.height * state.scale + padding * 2}px`;
+			const focus = layout.nodes.find((node) => node.id === file.path);
+			if (focus && layout.width * state.scale > box.clientWidth) {
+				panZoom.centerOn(focus.x, focus.y);
+			} else {
+				state.x = (box.clientWidth - layout.width * state.scale) / 2;
+				state.y = padding;
+				panZoom.apply();
+			}
+			box.toggleClass(
+				"is-pannable",
+				layout.width * state.scale > box.clientWidth
+			);
 		});
 	}
 

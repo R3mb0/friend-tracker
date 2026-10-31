@@ -8,18 +8,16 @@ import {
 } from "obsidian";
 import type FriendTracker from "@/main";
 import { PanZoom, PanZoomState } from "@/components/PanZoom";
+import { renderFamilyTree } from "@/components/FamilyTreeRenderer";
 import {
 	DEFAULT_LAYOUT,
 	FamilyGraph,
 	TreeLayout,
-	formatLifeDates,
 	layoutFamilyTree,
 } from "@/services/family";
 
 export const VIEW_TYPE_FAMILY_TREE = "friend-tracker-family-tree";
 
-
-type RelativeKind = "parent" | "partner" | "child";
 
 /** Interactive family tree around one focus person */
 export class FamilyTreeView extends ItemView {
@@ -127,8 +125,16 @@ export class FamilyTreeView extends ItemView {
 
 		const viewport = container.createDiv({ cls: "friend-tracker-tree-viewport" });
 		const canvas = viewport.createDiv({ cls: "friend-tracker-tree-canvas" });
-		this.renderLines(canvas, this.layout);
-		this.renderCards(canvas, this.layout, graph, files, focus);
+		renderFamilyTree(canvas, this.layout, graph, files, {
+			// Click: center this person; icon/Enter: open the profile
+			onCardClick: (file) => {
+				if (this.panZoom?.wasDragged) return;
+				if (file !== focus) this.setFocus(file);
+			},
+			onOpen: (file) => this.plugin.openContact(file),
+			onAddRelative: (file, kind) =>
+				this.plugin.addRelative(file, kind, () => this.render()),
+		});
 
 		if (graph.parentsOf(focus.path).length === 0 &&
 			graph.partnersOf(focus.path).length === 0 &&
@@ -192,105 +198,6 @@ export class FamilyTreeView extends ItemView {
 		});
 		setIcon(profile, "user");
 		profile.addEventListener("click", () => this.plugin.openContact(focus));
-	}
-
-	private renderLines(canvas: HTMLElement, layout: TreeLayout) {
-		const svgNs = "http://www.w3.org/2000/svg";
-		const svg = document.createElementNS(svgNs, "svg");
-		svg.setAttribute("class", "friend-tracker-tree-lines");
-		svg.setAttribute("width", String(layout.width));
-		svg.setAttribute("height", String(layout.height));
-		for (const line of layout.lines) {
-			const polyline = document.createElementNS(svgNs, "polyline");
-			polyline.setAttribute(
-				"points",
-				line.points.map(([x, y]) => `${x},${y}`).join(" ")
-			);
-			polyline.setAttribute("class", `is-${line.kind}`);
-			svg.appendChild(polyline);
-		}
-		canvas.appendChild(svg);
-		canvas.style.width = `${layout.width}px`;
-		canvas.style.height = `${layout.height}px`;
-	}
-
-	private renderCards(
-		canvas: HTMLElement,
-		layout: TreeLayout,
-		graph: FamilyGraph,
-		files: Map<string, TFile>,
-		focus: TFile
-	) {
-		const { cardWidth, cardHeight } = DEFAULT_LAYOUT;
-		for (const node of layout.nodes) {
-			const person = graph.get(node.id);
-			const file = files.get(node.id);
-			if (!person || !file) continue;
-
-			const card = canvas.createDiv({
-				cls: `friend-tracker-tree-card is-${node.role}`,
-				attr: { tabindex: "0", "data-path": node.id },
-			});
-			if (person.deceased) card.addClass("is-deceased");
-			card.style.left = `${node.x - cardWidth / 2}px`;
-			card.style.top = `${node.y - cardHeight / 2}px`;
-			card.style.width = `${cardWidth}px`;
-			card.style.height = `${cardHeight}px`;
-
-			card.createDiv({
-				cls: "friend-tracker-tree-name",
-				text: person.name + (person.deceased ? " †" : ""),
-			});
-			const dates = formatLifeDates(person);
-			if (dates) {
-				card.createDiv({ cls: "friend-tracker-tree-dates", text: dates });
-			}
-
-			// Click: focus this person; double-click: open the profile
-			card.addEventListener("click", () => {
-				if (this.panZoom?.wasDragged) return;
-				if (file !== focus) this.setFocus(file);
-			});
-			card.addEventListener("dblclick", () => this.plugin.openContact(file));
-			card.addEventListener("keydown", (e) => {
-				if (e.key === "Enter") this.plugin.openContact(file);
-			});
-
-			// Opening the profile needs its own button: a first click on
-			// another card re-renders the tree, so double-click can't work
-			const open = card.createEl("button", {
-				cls: "friend-tracker-tree-open",
-				attr: { "aria-label": "Open profile" },
-			});
-			setIcon(open, "external-link");
-			open.addEventListener("click", (e) => {
-				e.stopPropagation();
-				this.plugin.openContact(file);
-			});
-
-			this.renderAddButtons(card, file);
-		}
-	}
-
-	/** "+" buttons around a card to add relatives right in the tree */
-	private renderAddButtons(card: HTMLElement, file: TFile) {
-		const buttons: Array<{ kind: RelativeKind; label: string }> = [
-			{ kind: "parent", label: "Add parent" },
-			{ kind: "partner", label: "Add partner" },
-			{ kind: "child", label: "Add child" },
-		];
-		for (const { kind, label } of buttons) {
-			const button = card.createEl("button", {
-				cls: `friend-tracker-tree-add is-${kind}`,
-				attr: { "aria-label": label },
-			});
-			setIcon(button, "plus");
-			button.addEventListener("click", (e) => {
-				e.stopPropagation();
-				this.plugin.addRelative(file, kind, () => this.render());
-			});
-			button.addEventListener("dblclick", (e) => e.stopPropagation());
-		}
 	}
 
 	setFocus(file: TFile) {

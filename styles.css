@@ -2784,3 +2784,35 @@ If your plugin does not need CSS, delete this file.
 	justify-content: center;
 	height: 80px;
 }
+
+/* Mini family tree on the profile (above the family lists) */
+.friend-tracker-mini-tree {
+	position: relative;
+	/* The real height is set to fit the tree */
+	height: 200px;
+	margin-bottom: var(--size-4-3);
+	overflow: hidden;
+	border: 1px solid var(--background-modifier-border);
+	border-radius: var(--radius-m);
+	background-color: var(--background-primary);
+	background-image: radial-gradient(
+		var(--background-modifier-border) 1px,
+		transparent 1px
+	);
+	background-size: 20px 20px;
+}
+
+/* Wider than the box: drag to see the rest */
+.friend-tracker-mini-tree.is-pannable {
+	cursor: grab;
+	touch-action: pan-y;
+}
+
+.friend-tracker-mini-tree.is-pannable.is-dragging {
+	cursor: grabbing;
+}
+
+.friend-tracker-mini-tree-toggle.is-active {
+	color: var(--text-accent);
+	background-color: var(--background-modifier-hover);
+}

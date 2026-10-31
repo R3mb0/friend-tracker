@@ -9,6 +9,8 @@ export interface FriendTrackerSettings {
 	/** Birthday notices on startup for birthdays within this many days */
 	birthdayReminderDays: number;
 	showDeceased: boolean;
+	/** Small family tree in the "Family" section of profiles */
+	showFamilyMiniTree: boolean;
 	/** Template for new contacts */
 	newContactNoteSections: string[];
 	newContactFields: string[];
@@ -109,6 +111,7 @@ export const DEFAULT_SETTINGS: FriendTrackerSettings = {
 	defaultActiveTab: "notes",
 	birthdayReminderDays: 1,
 	showDeceased: true,
+	showFamilyMiniTree: false,
 	newContactNoteSections: [],
 	newContactFields: [],
 };
